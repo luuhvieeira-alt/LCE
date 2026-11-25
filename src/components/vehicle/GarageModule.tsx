@@ -8,11 +8,13 @@ import {
   Fuel,
   Gauge,
   History,
+  KeyRound,
   MessageSquare,
   RefreshCw,
   ShoppingCart,
   Tag,
   Users,
+  Warehouse,
   Wrench,
   Zap,
 } from 'lucide-react';
@@ -70,6 +72,12 @@ export function GarageModule() {
     availableDealershipStock,
     activeVehicleListings,
     enterDealershipShowroom,
+    worldVehicles,
+    mySpawnedVehicle,
+    drivingVehicleId,
+    spawnVehicle,
+    storeVehicle,
+    setActiveModule,
   } = useGame();
 
   const [tab, setTab] = useState<GarageTab>(() => (myVehicles.length > 0 ? 'garagem' : 'catalogo'));
@@ -559,6 +567,7 @@ export function GarageModule() {
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {vehicles.map((v) => {
                   const isSelected = selectedVehicle?.id === v.id;
+                  const activeOnStreet = worldVehicles[v.id];
                   return (
                     <button
                       key={v.id}
@@ -593,7 +602,19 @@ export function GarageModule() {
                           </span>
                         </div>
                         <div className="flex items-center justify-between text-[11px] text-slate-400">
-                          <span>{getVehicleStatusLabel(v.status)}</span>
+                          <span
+                            className={
+                              activeOnStreet
+                                ? 'font-semibold text-emerald-400'
+                                : 'text-slate-400'
+                            }
+                          >
+                            {activeOnStreet
+                              ? drivingVehicleId === v.id
+                                ? 'Na Cidade · Em condução'
+                                : 'Na Cidade · Na vaga de saída'
+                              : getVehicleStatusLabel(v.status)}
+                          </span>
                           <span className="font-mono tabular-nums">
                             {v.condition}% · {v.mileageKm.toLocaleString('pt-BR')} km
                           </span>
@@ -703,6 +724,85 @@ export function GarageModule() {
                         </p>
                       </div>
                     </div>
+
+                    {/* Physical 3D Garage Withdrawal & Storage Bar */}
+                    {(() => {
+                      const activeSelected = worldVehicles[selectedVehicle.id];
+                      const otherSpawned =
+                        mySpawnedVehicle && mySpawnedVehicle.vehicleId !== selectedVehicle.id
+                          ? mySpawnedVehicle
+                          : null;
+
+                      return (
+                        <div className="border border-amber-500/30 bg-[#0A0D14] p-3.5">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <p className="text-xs font-semibold text-amber-400">
+                                Garagem Física 3D · Retirada e Circulação
+                              </p>
+                              <p className="mt-0.5 text-[11px] text-slate-400">
+                                {activeSelected
+                                  ? `Materializado na cidade (${selectedVehicle.parkedZone}). Todos os cidadãos conectados visualizam este veículo.`
+                                  : otherSpawned
+                                    ? `Você já possui ${otherSpawned.model} [${otherSpawned.plate}] na rua. Guarde-o antes de retirar outro.`
+                                    : selectedVehicle.status === 'listed'
+                                      ? 'Cancele o anúncio P2P para retirar este veículo na cidade.'
+                                      : 'Materialize o veículo na vaga de saída da Garagem Central para dirigir pela cidade.'}
+                              </p>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2">
+                              {activeSelected ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => setActiveModule('mundo')}
+                                    className="inline-flex min-h-[38px] items-center gap-1.5 bg-amber-500 px-3.5 text-xs font-bold text-slate-950 hover:bg-amber-400"
+                                  >
+                                    <ArrowUpRight className="h-3.5 w-3.5" />
+                                    <span>Ir para o Mundo 3D</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={busy}
+                                    onClick={() =>
+                                      void runAction(async () => {
+                                        await storeVehicle(selectedVehicle.id);
+                                        return `${selectedVehicle.model} [${selectedVehicle.plate}] guardado na Garagem Central com estado atualizado.`;
+                                      })
+                                    }
+                                    className="inline-flex min-h-[38px] items-center gap-1.5 border border-white/15 bg-[#121722] px-3.5 text-xs font-semibold text-slate-200 hover:bg-white/10 disabled:opacity-45"
+                                  >
+                                    <Warehouse className="h-3.5 w-3.5" />
+                                    <span>Guardar na Garagem</span>
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled={
+                                    busy ||
+                                    selectedVehicle.status === 'listed' ||
+                                    Boolean(otherSpawned)
+                                  }
+                                  onClick={() =>
+                                    void runAction(async () => {
+                                      const spawned = await spawnVehicle(selectedVehicle.id);
+                                      setActiveModule('mundo');
+                                      return `${spawned.model} [${spawned.plate}] retirado na Garagem Física Central.`;
+                                    })
+                                  }
+                                  className="inline-flex min-h-[40px] items-center gap-1.5 bg-amber-500 px-4 text-xs font-bold uppercase tracking-wider text-slate-950 hover:bg-amber-400 disabled:opacity-45"
+                                >
+                                  <KeyRound className="h-3.5 w-3.5" />
+                                  <span>Retirar na Garagem 3D</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {/* Maintenance, Fuel & Usage Actions */}
                     <div className="space-y-2.5 border-t border-white/10 pt-4">
@@ -838,7 +938,11 @@ export function GarageModule() {
                         </label>
                         <button
                           type="button"
-                          disabled={busy || Number(listingPrice) < 15}
+                          disabled={
+                            busy ||
+                            Number(listingPrice) < 15 ||
+                            Boolean(worldVehicles[selectedVehicle.id])
+                          }
                           onClick={() =>
                             void runAction(async () => {
                               const price = Number(listingPrice);
@@ -851,7 +955,9 @@ export function GarageModule() {
                           }
                           className="min-h-[40px] w-full bg-amber-500 px-4 text-xs font-bold text-slate-950 hover:bg-amber-400 disabled:opacity-45"
                         >
-                          Anunciar Veículo à Venda
+                          {worldVehicles[selectedVehicle.id]
+                            ? 'Guarde na Garagem para Anunciar'
+                            : 'Anunciar Veículo à Venda'}
                         </button>
                       </div>
                     )}

@@ -18,6 +18,8 @@ interface PlayerControllerProps {
   character: CharacterProfile;
   cameraPreset: CameraPreset;
   controlsEnabled: boolean;
+  isDriving: boolean;
+  pendingTeleport: { x: number; z: number; seq: number } | null;
   isOnline: boolean;
   mobileInputRef: React.RefObject<MobileInputState>;
   onReportPosition: (pos: PlayerPositionPayload) => void;
@@ -87,6 +89,8 @@ export function PlayerController({
   character,
   cameraPreset,
   controlsEnabled,
+  isDriving,
+  pendingTeleport,
   isOnline,
   mobileInputRef,
   onReportPosition,
@@ -101,6 +105,19 @@ export function PlayerController({
   const draggingRef = useRef(false);
   const lastPointerXRef = useRef(0);
   const lastNearIdRef = useRef<string | null>(null);
+  const lastTeleportSeqRef = useRef<number>(0);
+
+  // Synchronize pedestrian coordinates when exiting a vehicle
+  useEffect(() => {
+    if (pendingTeleport && pendingTeleport.seq !== lastTeleportSeqRef.current) {
+      lastTeleportSeqRef.current = pendingTeleport.seq;
+      posRef.current.x = pendingTeleport.x;
+      posRef.current.z = pendingTeleport.z;
+      if (groupRef.current) {
+        groupRef.current.position.set(pendingTeleport.x, 0, pendingTeleport.z);
+      }
+    }
+  }, [pendingTeleport]);
 
   const [isMoving, setIsMoving] = useState(false);
   const [isSprinting, setIsSprinting] = useState(false);
@@ -163,6 +180,23 @@ export function PlayerController({
   }, []);
 
   useFrame((_, delta) => {
+    // Suspend on-foot walking, camera control, and on-foot position broadcast while driving a vehicle
+    if (isDriving) {
+      if (movingFlagRef.current) {
+        movingFlagRef.current = false;
+        setIsMoving(false);
+      }
+      if (sprintFlagRef.current) {
+        sprintFlagRef.current = false;
+        setIsSprinting(false);
+      }
+      if (lastNearIdRef.current !== null) {
+        lastNearIdRef.current = null;
+        onNearEstablishment(null);
+      }
+      return;
+    }
+
     const dt = Math.min(delta, 0.05);
     const keys = keysRef.current;
     const mobile = mobileInputRef.current;
@@ -281,6 +315,7 @@ export function PlayerController({
   return (
     <group
       ref={groupRef}
+      visible={!isDriving}
       position={[initSpawn.x, 0, initSpawn.z]}
       rotation={[0, initSpawn.rotY, 0]}
     >

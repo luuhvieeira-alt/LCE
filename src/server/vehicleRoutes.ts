@@ -23,7 +23,9 @@ import type {
   VehicleCategory,
   VehicleMaintenanceType,
 } from '../types/vehicle.ts';
+import type { SharedVehicleState } from '../types/multiplayer.ts';
 import type { EconomyAuthedRequest } from './economyRoutes.ts';
+import type { WorldVehiclesController } from './worldServer.ts';
 import {
   FirestoreRestError,
   toFsNumber,
@@ -36,6 +38,7 @@ export interface RegisterVehicleRoutesOptions {
   backend: FirestoreBackend;
   requireAuth: (req: EconomyAuthedRequest, res: Response, next: NextFunction) => Promise<void>;
   nowFn?: () => number;
+  worldVehicles?: WorldVehiclesController;
 }
 
 const VALID_CATEGORIES = new Set<VehicleCategory>(VEHICLE_CATEGORIES);
@@ -97,11 +100,22 @@ function makeId(prefix: string, raw?: unknown): string {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, '').slice(0, 18)}`;
 }
 
+const issuedPlates = new Set<string>();
+
 function generateLcePlate(): string {
   const letters = 'ABCDEFGHJKLMNPRSTUVWXYZ';
   const digits = '0123456789';
   const rand = (pool: string) => pool[crypto.randomInt(0, pool.length)];
-  return `LCE-${rand(digits)}${rand(letters)}${rand(digits)}${rand(digits)}`;
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const candidate = `LCE-${rand(digits)}${rand(letters)}${rand(digits)}${rand(digits)}`;
+    if (!issuedPlates.has(candidate)) {
+      issuedPlates.add(candidate);
+      return candidate;
+    }
+  }
+  const fallback = `LCE-${rand(letters)}${rand(digits)}${rand(letters)}${rand(digits)}`;
+  issuedPlates.add(fallback);
+  return fallback;
 }
 
 function buildCatalogModelFields(model: VehicleCatalogModel, updatedBy: string): Record<string, unknown> {
@@ -130,7 +144,7 @@ function buildCatalogModelFields(model: VehicleCatalogModel, updatedBy: string):
 }
 
 export function registerVehicleRoutes(options: RegisterVehicleRoutesOptions): void {
-  const { app, backend, requireAuth } = options;
+  const { app, backend, requireAuth, worldVehicles } = options;
 
   const activeLocks = new Map<string, Promise<void>>();
   const withLock = async <T>(key: string, fn: () => Promise<T>): Promise<T> => {
@@ -1500,6 +1514,12 @@ export function registerVehicleRoutes(options: RegisterVehicleRoutesOptions): vo
 
           await backend.commit(writes, idToken);
 
+          // Synchronize refreshed fuel/condition directly to any active vehicle in the 3D world
+          worldVehicles?.updateLiveMetrics(vehicleId, {
+            condition: quote.nextCondition,
+            fuelLevel: quote.nextFuelLevel,
+          });
+
           return {
             vehicleId,
             serviceType,
@@ -1626,6 +1646,13 @@ export function registerVehicleRoutes(options: RegisterVehicleRoutesOptions): vo
               403,
               'PERMISSION_DENIED',
               'Apenas o proprietário atual pode anunciar este veículo.'
+            );
+          }
+          if (worldVehicles?.getById(vehicleId)) {
+            throw new FirestoreRestError(
+              409,
+              'FAILED_PRECONDITION',
+              'Guarde o veículo na garagem antes de anunciá-lo à venda.'
             );
           }
           if (strField(vehicle, 'status') !== 'in_garage') {
@@ -2904,6 +2931,265 @@ export function registerVehicleRoutes(options: RegisterVehicleRoutesOptions): vo
         res.json(result);
       } catch (err) {
         handleRouteError(res, err, 'Erro ao abastecer estoque inicial da concessionária.');
+      }
+    }
+  );
+
+  // =========================================================================
+  // MODULE 5: PHYSICAL GARAGE SPAWN / STORE & 3D WORLD VEHICLE SESSIONS
+  // =========================================================================
+
+  // Withdraw an owned vehicle from the garage into the physical 3D exit bay
+  app.post(
+    '/api/vehicles/:vehicleId/spawn',
+    requireVerifiedCitizen,
+    async (req: EconomyAuthedRequest, res: Response) => {
+      const uid = req.verifiedUser!.uid;
+      const idToken = req.rawIdToken!;
+      const vehicleId = sanitizeId(req.params.vehicleId);
+      if (!vehicleId) {
+        res.status(400).json({ error: 'Identificador de veículo inválido.' });
+        return;
+      }
+      if (!worldVehicles) {
+        res.status(503).json({ error: 'Serviço de mundo 3D indisponível.' });
+        return;
+      }
+
+      try {
+        const result = await withLocks([`vehicle:${vehicleId}`, `user:${uid}`], async () => {
+          const vehicle = await backend.getDoc(`vehicles/${vehicleId}`, idToken);
+          if (!vehicle) {
+            throw new FirestoreRestError(404, 'NOT_FOUND', 'Veículo não encontrado na garagem.');
+          }
+          if (strField(vehicle, 'ownerUid') !== uid) {
+            throw new FirestoreRestError(
+              403,
+              'PERMISSION_DENIED',
+              'Somente o proprietário pode retirar este veículo da garagem.'
+            );
+          }
+          if (strField(vehicle, 'status') === 'listed') {
+            throw new FirestoreRestError(
+              409,
+              'FAILED_PRECONDITION',
+              'Cancele o anúncio de venda antes de retirar este veículo para a cidade.'
+            );
+          }
+
+          // Block simultaneous duplicate withdrawal of the same vehicle
+          if (worldVehicles.getById(vehicleId)) {
+            throw new FirestoreRestError(
+              409,
+              'ALREADY_EXISTS',
+              'Este veículo já está retirado e ativo na cidade.'
+            );
+          }
+
+          // Keep 1 active street vehicle per owner to prevent city clutter
+          const otherActive = worldVehicles.getByOwner(uid);
+          if (otherActive && otherActive.vehicleId !== vehicleId) {
+            throw new FirestoreRestError(
+              409,
+              'FAILED_PRECONDITION',
+              `Você já possui ${otherActive.model} [${otherActive.plate}] ativo na cidade. Guarde-o antes de retirar outro.`
+            );
+          }
+
+          const bay = worldVehicles.pickAvailableBay();
+          const now = Date.now();
+          const categoryRaw = strField(vehicle, 'category', 'sedan') as VehicleCategory;
+          const category: VehicleCategory = VALID_CATEGORIES.has(categoryRaw) ? categoryRaw : 'sedan';
+          const plate = clampStr(strField(vehicle, 'plate', 'LCE-0A00'), 16, 'LCE-0A00');
+          issuedPlates.add(plate);
+
+          // Persist parked street status & bay coordinates in Firestore
+          await backend.commit(
+            [
+              {
+                path: `vehicles/${vehicleId}`,
+                fields: {
+                  status: 'parked',
+                  parkedZone: clampStr(bay.label, 64, 'Garagem Central'),
+                  parkedX: round2(bay.x),
+                  parkedZ: round2(bay.z),
+                },
+                updateMask: ['status', 'parkedZone', 'parkedX', 'parkedZ'],
+                transforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+                precondition: { exists: true },
+              },
+            ],
+            idToken
+          );
+
+          const sharedState: SharedVehicleState = {
+            vehicleId,
+            ownerUid: uid,
+            ownerName: clampStr(strField(vehicle, 'ownerName', 'Cidadão LCE'), 64, 'Cidadão LCE'),
+            ownerAlias: clampStr(strField(vehicle, 'ownerAlias', 'cidadao'), 32, 'cidadao'),
+            driverUid: null,
+            driverName: null,
+            modelId: strField(vehicle, 'modelId', 'lce-sedan'),
+            manufacturer: clampStr(strField(vehicle, 'manufacturer', 'LCE Motors'), 48, 'LCE Motors'),
+            model: clampStr(strField(vehicle, 'model', 'LCE Sedan'), 64, 'LCE Sedan'),
+            year: Math.floor(numField(vehicle, 'year', 2025)),
+            category,
+            plate,
+            x: round2(bay.x),
+            z: round2(bay.z),
+            rotY: Math.round(bay.rotY * 1000) / 1000,
+            speed: 0,
+            steerAngle: 0,
+            throttle: 0,
+            braking: false,
+            handbrake: false,
+            boost: false,
+            state: 'parked',
+            fuelLevel: Math.max(0, Math.min(100, round2(numField(vehicle, 'fuelLevel', 100)))),
+            condition: Math.max(0, Math.min(100, Math.round(numField(vehicle, 'condition', 100)))),
+            mileageKm: Math.max(0, round2(numField(vehicle, 'mileageKm', 0))),
+            sessionDistanceM: 0,
+            spawnBayLabel: bay.label,
+            updatedAt: now,
+          };
+
+          worldVehicles.spawnVehicle(sharedState);
+
+          return {
+            vehicle: sharedState,
+            bay,
+          };
+        });
+
+        res.status(201).json(result);
+      } catch (err) {
+        handleRouteError(res, err, 'Erro ao retirar veículo da garagem.');
+      }
+    }
+  );
+
+  // Store an active street vehicle back in the garage, persisting mileage, fuel & condition
+  app.post(
+    '/api/vehicles/:vehicleId/store',
+    requireVerifiedCitizen,
+    async (req: EconomyAuthedRequest, res: Response) => {
+      const uid = req.verifiedUser!.uid;
+      const idToken = req.rawIdToken!;
+      const vehicleId = sanitizeId(req.params.vehicleId);
+      if (!vehicleId) {
+        res.status(400).json({ error: 'Identificador de veículo inválido.' });
+        return;
+      }
+      if (!worldVehicles) {
+        res.status(503).json({ error: 'Serviço de mundo 3D indisponível.' });
+        return;
+      }
+
+      try {
+        const result = await withLocks([`vehicle:${vehicleId}`, `user:${uid}`], async () => {
+          const vehicle = await backend.getDoc(`vehicles/${vehicleId}`, idToken);
+          if (!vehicle) {
+            throw new FirestoreRestError(404, 'NOT_FOUND', 'Veículo não encontrado.');
+          }
+          if (strField(vehicle, 'ownerUid') !== uid) {
+            throw new FirestoreRestError(
+              403,
+              'PERMISSION_DENIED',
+              'Somente o proprietário pode guardar este veículo na garagem.'
+            );
+          }
+
+          const live = worldVehicles.getById(vehicleId);
+          const curMileage = Math.max(0, round2(numField(vehicle, 'mileageKm', 0)));
+          const curFuel = Math.max(0, Math.min(100, round2(numField(vehicle, 'fuelLevel', 100))));
+          const curCond = Math.max(0, Math.min(100, Math.round(numField(vehicle, 'condition', 100))));
+          const curMarket = Math.max(15, round2(numField(vehicle, 'marketValue', 100)));
+
+          const drivenKm = live ? Math.max(0, round2(live.sessionDistanceM * 0.004)) : 0;
+          const nextMileage = round2(curMileage + drivenKm);
+          const nextFuel = live
+            ? Math.max(0, Math.min(curFuel, round2(live.fuelLevel)))
+            : curFuel;
+          const wearFromDrive = drivenKm >= 2 ? Math.min(5, Math.floor(drivenKm / 8)) : 0;
+          const liveCond = live ? Math.min(curCond, Math.round(live.condition)) : curCond;
+          const nextCond = Math.max(10, Math.min(curCond, liveCond - wearFromDrive));
+
+          const modelRef = DEFAULT_VEHICLE_CATALOG_MAP[strField(vehicle, 'modelId')];
+          const baseMarket = modelRef?.marketValue ?? curMarket;
+          const nextMarketValue = Math.max(
+            15,
+            Math.min(curMarket, computeDepreciatedMarketValue(baseMarket, nextCond, nextMileage))
+          );
+
+          await backend.commit(
+            [
+              {
+                path: `vehicles/${vehicleId}`,
+                fields: {
+                  status: 'in_garage',
+                  mileageKm: nextMileage,
+                  fuelLevel: nextFuel,
+                  condition: nextCond,
+                  marketValue: nextMarketValue,
+                  parkedZone: 'Garagem Central',
+                  parkedX: 0,
+                  parkedZ: 0,
+                },
+                updateMask: [
+                  'status',
+                  'mileageKm',
+                  'fuelLevel',
+                  'condition',
+                  'marketValue',
+                  'parkedZone',
+                  'parkedX',
+                  'parkedZ',
+                ],
+                transforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+                precondition: { exists: true },
+              },
+            ],
+            idToken
+          );
+
+          worldVehicles.despawnVehicle(vehicleId, uid, 'store');
+
+          return {
+            vehicleId,
+            status: 'in_garage' as const,
+            plate: strField(vehicle, 'plate'),
+            drivenKm,
+            mileageKm: nextMileage,
+            fuelLevel: nextFuel,
+            condition: nextCond,
+            marketValue: nextMarketValue,
+            parkedZone: 'Garagem Central',
+          };
+        });
+
+        res.json(result);
+      } catch (err) {
+        handleRouteError(res, err, 'Erro ao guardar veículo na garagem.');
+      }
+    }
+  );
+
+  // Admin read-only visibility into authoritative 3D vehicle world events
+  app.get(
+    '/api/admin/vehicles/world-events',
+    requireVerifiedCitizen,
+    async (req: EconomyAuthedRequest, res: Response) => {
+      try {
+        if (!(await resolveIsAdmin(req))) {
+          res.status(403).json({ error: 'Acesso restrito à administração.' });
+          return;
+        }
+        res.json({
+          activeVehicles: worldVehicles?.getAll() ?? [],
+          events: worldVehicles?.getRecentEvents() ?? [],
+        });
+      } catch (err) {
+        handleRouteError(res, err, 'Erro ao carregar eventos de veículos.');
       }
     }
   );

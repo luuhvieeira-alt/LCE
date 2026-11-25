@@ -13,6 +13,7 @@ import {
   createFacadeTexture,
   createSidewalkTexture,
 } from './proceduralTextures';
+import { GARAGE_EXIT_BAYS } from '../../config/vehiclePhysics';
 
 interface UrbanEnvironmentProps {
   isSoftwareGl: boolean;
@@ -46,15 +47,10 @@ const TREE_POSITIONS: [number, number, number][] = [
   [15, 0, 9.5],
 ];
 
-const PARKED_VEHICLES: {
-  pos: [number, number, number];
-  rotY: number;
-  bodyColor: string;
-}[] = [
-  { pos: [-4.6, 0, -14], rotY: 0, bodyColor: '#1F2633' },
-  { pos: [4.6, 0, 14], rotY: Math.PI, bodyColor: '#2B1F23' },
-  { pos: [-16, 0, 4.6], rotY: Math.PI / 2, bodyColor: '#242B35' },
-  { pos: [15, 0, -4.6], rotY: -Math.PI / 2, bodyColor: '#1A242D' },
+const PUBLIC_PARKING_BAYS: Array<{ pos: [number, number, number]; rotY: number; label: string }> = [
+  { pos: [-19.5, 0.032, -8.6], rotY: Math.PI / 2, label: 'ESTACIONAMENTO · BANCO' },
+  { pos: [19.5, 0.032, -8.6], rotY: -Math.PI / 2, label: 'ESTACIONAMENTO · AGÊNCIA' },
+  { pos: [19.5, 0.032, 8.6], rotY: -Math.PI / 2, label: 'ESTACIONAMENTO · GALERIA' },
 ];
 
 function CompositeStreetLamp({ position }: { position: [number, number, number] }) {
@@ -130,64 +126,199 @@ function UrbanTree({ position }: { position: [number, number, number] }) {
   );
 }
 
-function ParkedSedan({
-  pos,
-  rotY,
-  bodyColor,
-}: {
-  pos: [number, number, number];
-  rotY: number;
-  bodyColor: string;
-}) {
-  const wheels: [number, number, number][] = [
-    [-0.86, 0.34, 1.25],
-    [0.86, 0.34, 1.25],
-    [-0.86, 0.34, -1.25],
-    [0.86, 0.34, -1.25],
-  ];
-
+function WorldVehicleZones3D() {
   return (
-    <group position={pos} rotation={[0, rotY, 0]}>
-      {/* Main Lower Chassis */}
-      <mesh position={[0, 0.62, 0]} castShadow receiveShadow>
-        <boxGeometry args={[1.82, 0.56, 4.35]} />
-        <meshStandardMaterial color={bodyColor} roughness={0.28} metalness={0.78} />
-      </mesh>
-      {/* Cabin & Pillars */}
-      <mesh position={[0, 1.12, -0.15]} castShadow>
-        <boxGeometry args={[1.56, 0.52, 2.15]} />
-        <meshStandardMaterial color="#111620" roughness={0.14} metalness={0.88} />
-      </mesh>
-      {/* Roof cap */}
-      <mesh position={[0, 1.39, -0.15]}>
-        <boxGeometry args={[1.48, 0.06, 1.9]} />
-        <meshStandardMaterial color={bodyColor} roughness={0.32} metalness={0.75} />
-      </mesh>
-      {/* Front Headlights */}
-      <mesh position={[-0.62, 0.66, 2.18]}>
-        <boxGeometry args={[0.38, 0.14, 0.06]} />
-        <meshStandardMaterial color="#FEF3C7" emissive="#F59E0B" emissiveIntensity={1.6} />
-      </mesh>
-      <mesh position={[0.62, 0.66, 2.18]}>
-        <boxGeometry args={[0.38, 0.14, 0.06]} />
-        <meshStandardMaterial color="#FEF3C7" emissive="#F59E0B" emissiveIntensity={1.6} />
-      </mesh>
-      {/* Rear Taillights */}
-      <mesh position={[0, 0.68, -2.18]}>
-        <boxGeometry args={[1.54, 0.1, 0.06]} />
-        <meshStandardMaterial color="#FCA5A5" emissive="#DC2626" emissiveIntensity={1.4} />
-      </mesh>
-      {/* 4 Wheels with metallic rims */}
-      {wheels.map((wPos, idx) => (
-        <group key={idx} position={wPos} rotation={[0, 0, Math.PI / 2]}>
-          <mesh castShadow>
-            <cylinderGeometry args={[0.34, 0.34, 0.24, 14]} />
-            <meshStandardMaterial color="#101216" roughness={0.85} metalness={0.1} />
+    <group name="world-vehicle-zones">
+      {/* 1. Physical Garage Exit Bays (Baias 01–04 illuminated floor markings) */}
+      {GARAGE_EXIT_BAYS.slice(0, 4).map((bay, idx) => (
+        <group key={bay.id} position={[bay.x, 0.032, bay.z]} rotation={[0, bay.rotY, 0]}>
+          {/* Bay asphalt pad */}
+          <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+            <planeGeometry args={[2.9, 5.4]} />
+            <meshStandardMaterial color="#121722" roughness={0.72} metalness={0.18} />
           </mesh>
-          <mesh>
-            <cylinderGeometry args={[0.2, 0.2, 0.26, 10]} />
-            <meshStandardMaterial color="#94A3B8" roughness={0.25} metalness={0.9} />
+          {/* Left & Right Amber Guide Strips */}
+          <mesh position={[-1.4, 0.01, 0]}>
+            <boxGeometry args={[0.08, 0.02, 5.2]} />
+            <meshStandardMaterial
+              color="#F59E0B"
+              emissive="#D97706"
+              emissiveIntensity={1.1}
+              roughness={0.35}
+            />
           </mesh>
+          <mesh position={[1.4, 0.01, 0]}>
+            <boxGeometry args={[0.08, 0.02, 5.2]} />
+            <meshStandardMaterial
+              color="#F59E0B"
+              emissive="#D97706"
+              emissiveIntensity={1.1}
+              roughness={0.35}
+            />
+          </mesh>
+          {/* Front wheel stop bar */}
+          <mesh position={[0, 0.01, 2.55]}>
+            <boxGeometry args={[2.8, 0.02, 0.1]} />
+            <meshStandardMaterial
+              color="#F59E0B"
+              emissive="#D97706"
+              emissiveIntensity={1.3}
+              roughness={0.35}
+            />
+          </mesh>
+          <Text
+            position={[0, 0.03, -1.9]}
+            rotation={[-Math.PI / 2, 0, 0]}
+            fontSize={0.42}
+            color="#F59E0B"
+            anchorX="center"
+            anchorY="middle"
+          >
+            {`GARAGEM 0${idx + 1}`}
+          </Text>
+        </group>
+      ))}
+
+      {/* 2. Posto de Combustível LCE (x = 29.5, z = -10.5; pumps solid island at x = 32.8, z = -12.5) */}
+      <group position={[29.5, 0, -10.5]}>
+        {/* Concrete forecourt apron */}
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.03, 0]} receiveShadow>
+          <planeGeometry args={[9.2, 8.6]} />
+          <meshStandardMaterial color="#181E2B" roughness={0.78} metalness={0.12} />
+        </mesh>
+        {/* Marked Refuel Lane */}
+        <mesh position={[-0.6, 0.04, 0]}>
+          <boxGeometry args={[3.4, 0.02, 6.2]} />
+          <meshStandardMaterial color="#121824" roughness={0.75} />
+        </mesh>
+        <mesh position={[-2.3, 0.05, 0]}>
+          <boxGeometry args={[0.1, 0.02, 6.2]} />
+          <meshStandardMaterial color="#10B981" emissive="#059669" emissiveIntensity={1.2} />
+        </mesh>
+        <mesh position={[1.1, 0.05, 0]}>
+          <boxGeometry args={[0.1, 0.02, 6.2]} />
+          <meshStandardMaterial color="#10B981" emissive="#059669" emissiveIntensity={1.2} />
+        </mesh>
+        {/* Solid Fuel Pump Island & Dispensers (aligned with SERVICE_STRUCTURE_BOXES at x=32.8, z=-12.5) */}
+        <group position={[3.3, 0, -2.0]}>
+          <mesh position={[0, 0.16, 0]} castShadow receiveShadow>
+            <boxGeometry args={[2.6, 0.32, 5.8]} />
+            <meshStandardMaterial color="#272E3D" roughness={0.8} metalness={0.15} />
+          </mesh>
+          {[-1.5, 1.5].map((pz, idx) => (
+            <group key={idx} position={[0, 0.32, pz]}>
+              <mesh position={[0, 0.78, 0]} castShadow>
+                <boxGeometry args={[0.82, 1.56, 0.65]} />
+                <meshStandardMaterial color="#1F2937" roughness={0.35} metalness={0.6} />
+              </mesh>
+              <mesh position={[-0.42, 1.15, 0]}>
+                <boxGeometry args={[0.04, 0.36, 0.42]} />
+                <meshStandardMaterial color="#10B981" emissive="#10B981" emissiveIntensity={1.6} />
+              </mesh>
+            </group>
+          ))}
+          {/* Overhead Fuel Station Canopy supported by two slim columns */}
+          <mesh position={[-1.4, 2.5, -2.2]} castShadow>
+            <boxGeometry args={[0.32, 4.4, 0.32]} />
+            <meshStandardMaterial color="#1A202C" roughness={0.4} metalness={0.75} />
+          </mesh>
+          <mesh position={[-1.4, 2.5, 2.2]} castShadow>
+            <boxGeometry args={[0.32, 4.4, 0.32]} />
+            <meshStandardMaterial color="#1A202C" roughness={0.4} metalness={0.75} />
+          </mesh>
+          <mesh position={[-2.2, 4.65, 0]} castShadow>
+            <boxGeometry args={[7.4, 0.48, 7.6]} />
+            <meshStandardMaterial color="#111622" roughness={0.4} metalness={0.65} />
+          </mesh>
+          <mesh position={[-5.92, 4.65, 0]}>
+            <boxGeometry args={[0.08, 0.24, 7.4]} />
+            <meshStandardMaterial color="#F59E0B" emissive="#F59E0B" emissiveIntensity={1.9} />
+          </mesh>
+          <Text
+            position={[-6.02, 4.65, 0]}
+            rotation={[0, -Math.PI / 2, 0]}
+            fontSize={0.42}
+            color="#F8FAFC"
+            anchorX="center"
+            anchorY="middle"
+          >
+            POSTO LCE · COMBUSTÍVEL
+          </Text>
+        </group>
+      </group>
+
+      {/* 3. Oficina Mecânica LCE (x = 29.5, z = 10.5; service wall at x = 32.8, z = 12.5) */}
+      <group position={[29.5, 0, 10.5]}>
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.03, 0]} receiveShadow>
+          <planeGeometry args={[9.2, 8.6]} />
+          <meshStandardMaterial color="#181E2B" roughness={0.78} metalness={0.12} />
+        </mesh>
+        {/* Marked Mechanical Repair Pad */}
+        <mesh position={[-0.6, 0.04, 0]}>
+          <boxGeometry args={[3.5, 0.02, 6.2]} />
+          <meshStandardMaterial color="#121824" roughness={0.75} />
+        </mesh>
+        <mesh position={[-2.35, 0.05, 0]}>
+          <boxGeometry args={[0.1, 0.02, 6.2]} />
+          <meshStandardMaterial color="#38BDF8" emissive="#0284C7" emissiveIntensity={1.2} />
+        </mesh>
+        <mesh position={[1.15, 0.05, 0]}>
+          <boxGeometry args={[0.1, 0.02, 6.2]} />
+          <meshStandardMaterial color="#38BDF8" emissive="#0284C7" emissiveIntensity={1.2} />
+        </mesh>
+        {/* Solid Workshop Back Wall & Service Canopy (aligned with SERVICE_STRUCTURE_BOXES at x=32.8, z=12.5) */}
+        <group position={[3.3, 0, 2.0]}>
+          <mesh position={[0, 2.2, 0]} castShadow receiveShadow>
+            <boxGeometry args={[2.6, 4.4, 6.0]} />
+            <meshStandardMaterial color="#1A2232" roughness={0.62} metalness={0.35} />
+          </mesh>
+          {/* Overhead Workshop Canopy */}
+          <mesh position={[-2.2, 4.55, 0]} castShadow>
+            <boxGeometry args={[7.4, 0.48, 7.6]} />
+            <meshStandardMaterial color="#111622" roughness={0.42} metalness={0.62} />
+          </mesh>
+          <mesh position={[-5.92, 4.55, 0]}>
+            <boxGeometry args={[0.08, 0.24, 7.4]} />
+            <meshStandardMaterial color="#38BDF8" emissive="#0284C7" emissiveIntensity={1.9} />
+          </mesh>
+          <Text
+            position={[-6.02, 4.55, 0]}
+            rotation={[0, -Math.PI / 2, 0]}
+            fontSize={0.42}
+            color="#F8FAFC"
+            anchorX="center"
+            anchorY="middle"
+          >
+            OFICINA MECÂNICA LCE
+          </Text>
+        </group>
+      </group>
+
+      {/* 4. Vagas de Estacionamento Públicas (curb-side stalls beside major establishments) */}
+      {PUBLIC_PARKING_BAYS.map((spot, idx) => (
+        <group key={idx} position={spot.pos} rotation={[0, spot.rotY, 0]}>
+          <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+            <planeGeometry args={[2.8, 5.6]} />
+            <meshStandardMaterial color="#131926" roughness={0.78} metalness={0.14} />
+          </mesh>
+          <mesh position={[-1.36, 0.01, 0]}>
+            <boxGeometry args={[0.07, 0.02, 5.4]} />
+            <meshStandardMaterial color="#94A3B8" roughness={0.5} />
+          </mesh>
+          <mesh position={[1.36, 0.01, 0]}>
+            <boxGeometry args={[0.07, 0.02, 5.4]} />
+            <meshStandardMaterial color="#94A3B8" roughness={0.5} />
+          </mesh>
+          <Text
+            position={[0, 0.03, 0]}
+            rotation={[-Math.PI / 2, 0, 0]}
+            fontSize={0.28}
+            color="#94A3B8"
+            anchorX="center"
+            anchorY="middle"
+          >
+            P
+          </Text>
         </group>
       ))}
     </group>
@@ -483,10 +614,8 @@ export function UrbanEnvironment({
         <UrbanTree key={idx} position={pos} />
       ))}
 
-      {/* Parked Composite Sedans */}
-      {PARKED_VEHICLES.map((v, idx) => (
-        <ParkedSedan key={idx} pos={v.pos} rotY={v.rotY} bodyColor={v.bodyColor} />
-      ))}
+      {/* Integrated World Vehicle Zones (Garage Exit Bays, Fuel Station, Workshop, Public Parking) */}
+      <WorldVehicleZones3D />
     </group>
   );
 }

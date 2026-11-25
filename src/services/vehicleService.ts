@@ -242,6 +242,37 @@ export async function recordVehicleTripWear(
   });
 }
 
+export async function spawnVehicleToWorld(
+  user: User,
+  vehicleId: string
+): Promise<{
+  vehicle: import('../types/multiplayer').SharedVehicleState;
+  bay: { id: string; label: string; x: number; z: number; rotY: number };
+}> {
+  return vehicleApiFetch(user, `/api/vehicles/${encodeURIComponent(vehicleId)}/spawn`, {
+    method: 'POST',
+  });
+}
+
+export async function storeVehicleInGarage(
+  user: User,
+  vehicleId: string
+): Promise<{
+  vehicleId: string;
+  status: 'in_garage';
+  plate: string;
+  drivenKm: number;
+  mileageKm: number;
+  fuelLevel: number;
+  condition: number;
+  marketValue: number;
+  parkedZone: string;
+}> {
+  return vehicleApiFetch(user, `/api/vehicles/${encodeURIComponent(vehicleId)}/store`, {
+    method: 'POST',
+  });
+}
+
 export async function createVehicleListing(
   user: User,
   vehicleId: string,

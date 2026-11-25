@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -6,6 +7,15 @@ import { FirestoreRestClient, type FirestoreBackend } from './firestoreRest.ts';
 import { registerEconomyRoutes } from './economyRoutes.ts';
 import { registerBusinessRoutes } from './businessRoutes.ts';
 import { registerVehicleRoutes } from './vehicleRoutes.ts';
+import {
+  GARAGE_EXIT_BAYS,
+  VEHICLE_WORLD_BOUND,
+  collidesVehicleWithCity,
+  findSafeVehicleExitPosition,
+  getVehicleHandling,
+  type GarageExitBay,
+} from '../config/vehiclePhysics.ts';
+import type { SharedVehicleState, WorldVehicleEvent } from '../types/multiplayer.ts';
 
 export interface VerifiedTokenPayload {
   uid: string;
@@ -28,7 +38,26 @@ export interface SharedPlayerState {
   skinTone: string;
   style: string;
   isMoving: boolean;
+  drivingVehicleId: string | null;
   updatedAt: number;
+}
+
+export interface WorldVehiclesController {
+  getAll: () => SharedVehicleState[];
+  getById: (vehicleId: string) => SharedVehicleState | undefined;
+  getByOwner: (ownerUid: string) => SharedVehicleState | undefined;
+  pickAvailableBay: () => GarageExitBay;
+  spawnVehicle: (vehicle: SharedVehicleState) => void;
+  despawnVehicle: (
+    vehicleId: string,
+    actorUid: string,
+    reason: 'store' | 'disconnect_cleanup'
+  ) => SharedVehicleState | null;
+  updateLiveMetrics: (
+    vehicleId: string,
+    patch: { fuelLevel?: number; condition?: number }
+  ) => void;
+  getRecentEvents: () => WorldVehicleEvent[];
 }
 
 export interface WorldServerOptions {
@@ -46,12 +75,15 @@ export interface WorldServerInstance {
   httpServer: http.Server;
   wss: WebSocketServer;
   sharedPlayers: Map<string, SharedPlayerState>;
+  sharedVehicles: Map<string, SharedVehicleState>;
+  vehicleWorldEvents: WorldVehicleEvent[];
   shutdown: () => Promise<void>;
 }
 
 const WORLD_BOUND = 36;
 const SAFE_SPAWN = { x: 0, z: 6.5, rotY: Math.PI };
 const VALID_STYLES = new Set(['executivo', 'urbano', 'tatico']);
+const MAX_WORLD_EVENTS = 250;
 const ESTABLISHMENT_FOOTPRINTS = [
   { x: -18, z: -18, hw: 8.3, hd: 7.3 },
   { x: 18, z: -18, hw: 7.8, hd: 6.8 },
@@ -59,15 +91,24 @@ const ESTABLISHMENT_FOOTPRINTS = [
   { x: 18, z: 18, hw: 8.3, hd: 7.3 },
 ];
 
-function clampCoord(value: unknown, fallback: number): number {
+function clampCoord(value: unknown, fallback: number, bound = WORLD_BOUND): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
-  return Math.max(-WORLD_BOUND, Math.min(WORLD_BOUND, value));
+  return Math.max(-bound, Math.min(bound, value));
+}
+
+function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, value));
 }
 
 function clampRotY(value: unknown, fallback: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   const wrapped = ((value + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
   return Number.isFinite(wrapped) ? wrapped : fallback;
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
 }
 
 function isInsideBlockedZone(x: number, z: number): boolean {
@@ -127,6 +168,8 @@ interface SocketMeta {
   windowStart: number;
   msgCountInWindow: number;
   lastMoveTs: number;
+  lastVehicleUpdateTs: number;
+  lastSpeedWarnTs: number;
 }
 
 export function createWorldServer(options: WorldServerOptions): WorldServerInstance {
@@ -139,6 +182,8 @@ export function createWorldServer(options: WorldServerOptions): WorldServerInsta
     nowFn,
     heartbeatIntervalMs = 15000,
   } = options;
+
+  const getNow = () => (nowFn ? nowFn() : Date.now());
 
   const economyBackend: FirestoreBackend =
     firestoreBackend ?? new FirestoreRestClient(firebaseProjectId, firestoreDatabaseId);
@@ -179,8 +224,33 @@ export function createWorldServer(options: WorldServerOptions): WorldServerInsta
   };
 
   const sharedPlayers = new Map<string, SharedPlayerState>();
+  const sharedVehicles = new Map<string, SharedVehicleState>();
+  const vehicleWorldEvents: WorldVehicleEvent[] = [];
   const socketMeta = new Map<WebSocket, SocketMeta>();
   const uidToSocket = new Map<string, WebSocket>();
+
+  const recordVehicleEvent = (
+    type: WorldVehicleEvent['type'],
+    vehicleId: string,
+    plate: string,
+    actorUid: string,
+    ownerUid: string,
+    detail: string
+  ): void => {
+    vehicleWorldEvents.unshift({
+      id: `wev_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`,
+      type,
+      vehicleId,
+      plate,
+      actorUid,
+      ownerUid,
+      detail: detail.slice(0, 180),
+      timestamp: getNow(),
+    });
+    if (vehicleWorldEvents.length > MAX_WORLD_EVENTS) {
+      vehicleWorldEvents.length = MAX_WORLD_EVENTS;
+    }
+  };
 
   const broadcastJson = (payload: Record<string, unknown>, excludeSocket?: WebSocket): void => {
     const serialized = JSON.stringify(payload);
@@ -192,6 +262,138 @@ export function createWorldServer(options: WorldServerOptions): WorldServerInsta
     }
   };
 
+  const sendToUid = (uid: string, payload: Record<string, unknown>): void => {
+    const sock = uidToSocket.get(uid);
+    if (sock && sock.readyState === WebSocket.OPEN) {
+      sock.send(JSON.stringify(payload));
+    }
+  };
+
+  const worldVehiclesController: WorldVehiclesController = {
+    getAll: () => Array.from(sharedVehicles.values()),
+    getById: (vehicleId: string) => sharedVehicles.get(vehicleId),
+    getByOwner: (ownerUid: string) => {
+      for (const v of sharedVehicles.values()) {
+        if (v.ownerUid === ownerUid) return v;
+      }
+      return undefined;
+    },
+    pickAvailableBay: (): GarageExitBay => {
+      for (const bay of GARAGE_EXIT_BAYS) {
+        let occupied = false;
+        for (const v of sharedVehicles.values()) {
+          if (Math.hypot(v.x - bay.x, v.z - bay.z) < 4.2) {
+            occupied = true;
+            break;
+          }
+        }
+        if (!occupied) return bay;
+      }
+      return GARAGE_EXIT_BAYS[sharedVehicles.size % GARAGE_EXIT_BAYS.length];
+    },
+    spawnVehicle: (vehicle: SharedVehicleState) => {
+      sharedVehicles.set(vehicle.vehicleId, vehicle);
+      recordVehicleEvent(
+        'spawn',
+        vehicle.vehicleId,
+        vehicle.plate,
+        vehicle.ownerUid,
+        vehicle.ownerUid,
+        `${vehicle.model} [${vehicle.plate}] retirado em ${vehicle.spawnBayLabel}`
+      );
+      broadcastJson({ type: 'vehicle:spawned', vehicle });
+    },
+    despawnVehicle: (
+      vehicleId: string,
+      actorUid: string,
+      reason: 'store' | 'disconnect_cleanup'
+    ): SharedVehicleState | null => {
+      const existing = sharedVehicles.get(vehicleId);
+      if (!existing) return null;
+
+      // If driver is seated inside, cleanly restore pedestrian state before despawning
+      if (existing.driverUid) {
+        const driver = sharedPlayers.get(existing.driverUid);
+        if (driver) {
+          const exitPos = findSafeVehicleExitPosition(existing.x, existing.z, existing.rotY);
+          driver.drivingVehicleId = null;
+          driver.x = exitPos.x;
+          driver.z = exitPos.z;
+          driver.isMoving = false;
+          driver.updatedAt = getNow();
+          broadcastJson({
+            type: 'vehicle:exited',
+            vehicleId,
+            uid: driver.uid,
+            exitX: exitPos.x,
+            exitZ: exitPos.z,
+            vehicle: {
+              ...existing,
+              driverUid: null,
+              driverName: null,
+              speed: 0,
+              state: 'parked',
+            },
+          });
+        }
+      }
+
+      sharedVehicles.delete(vehicleId);
+      recordVehicleEvent(
+        reason,
+        vehicleId,
+        existing.plate,
+        actorUid,
+        existing.ownerUid,
+        reason === 'store'
+          ? `${existing.model} [${existing.plate}] guardado na garagem (${Math.round(existing.sessionDistanceM)}m percorridos)`
+          : `${existing.model} [${existing.plate}] recolhido automaticamente após desconexão do proprietário`
+      );
+      broadcastJson({
+        type: 'vehicle:despawned',
+        vehicleId,
+        ownerUid: existing.ownerUid,
+        reason,
+      });
+      return existing;
+    },
+    updateLiveMetrics: (
+      vehicleId: string,
+      patch: { fuelLevel?: number; condition?: number }
+    ) => {
+      const existing = sharedVehicles.get(vehicleId);
+      if (!existing) return;
+      if (typeof patch.fuelLevel === 'number' && Number.isFinite(patch.fuelLevel)) {
+        existing.fuelLevel = Math.max(0, Math.min(100, round2(patch.fuelLevel)));
+      }
+      if (typeof patch.condition === 'number' && Number.isFinite(patch.condition)) {
+        existing.condition = Math.max(0, Math.min(100, Math.round(patch.condition)));
+      }
+      existing.updatedAt = getNow();
+      broadcastJson({
+        type: 'vehicle:updated',
+        vehicleId: existing.vehicleId,
+        x: existing.x,
+        z: existing.z,
+        rotY: existing.rotY,
+        speed: existing.speed,
+        steerAngle: existing.steerAngle,
+        throttle: existing.throttle,
+        braking: existing.braking,
+        handbrake: existing.handbrake,
+        boost: existing.boost,
+        state: existing.state,
+        fuelLevel: existing.fuelLevel,
+        condition: existing.condition,
+        sessionDistanceM: existing.sessionDistanceM,
+        driverUid: existing.driverUid,
+        driverName: existing.driverName,
+        updatedAt: existing.updatedAt,
+      });
+    },
+    getRecentEvents: () => [...vehicleWorldEvents],
+  };
+
   const removePlayerForSocket = (ws: WebSocket): void => {
     const meta = socketMeta.get(ws);
     socketMeta.delete(ws);
@@ -200,7 +402,39 @@ export function createWorldServer(options: WorldServerOptions): WorldServerInsta
     const uid = meta.uid;
     if (uidToSocket.get(uid) === ws) {
       uidToSocket.delete(uid);
+
+      // Clean up any active vehicle owned or driven by the disconnecting citizen
+      // so vehicles never remain permanently abandoned and cannot be hijacked.
+      const toDespawn: string[] = [];
+      for (const v of sharedVehicles.values()) {
+        if (v.ownerUid === uid) {
+          toDespawn.push(v.vehicleId);
+        } else if (v.driverUid === uid) {
+          v.driverUid = null;
+          v.driverName = null;
+          v.speed = 0;
+          v.throttle = 0;
+          v.braking = false;
+          v.handbrake = false;
+          v.boost = false;
+          v.state = 'parked';
+          v.updatedAt = getNow();
+          broadcastJson({
+            type: 'vehicle:exited',
+            vehicleId: v.vehicleId,
+            uid,
+            exitX: v.x,
+            exitZ: v.z,
+            vehicle: v,
+          });
+        }
+      }
+
       sharedPlayers.delete(uid);
+      for (const vid of toDespawn) {
+        worldVehiclesController.despawnVehicle(vid, uid, 'disconnect_cleanup');
+      }
+
       broadcastJson({ type: 'player:left', uid });
     }
   };
@@ -243,6 +477,7 @@ export function createWorldServer(options: WorldServerOptions): WorldServerInsta
       status: 'operational',
       shard: 'distrito-central',
       onlinePlayers: sharedPlayers.size,
+      activeVehicles: sharedVehicles.size,
       timestamp: Date.now(),
     });
   });
@@ -253,6 +488,7 @@ export function createWorldServer(options: WorldServerOptions): WorldServerInsta
       universe: 'LIFE CRIMINAL EXPERIENCE',
       activeDistrict: 'distrito-central',
       onlineCount: sharedPlayers.size,
+      activeVehiclesCount: sharedVehicles.size,
       players: Array.from(sharedPlayers.values()).map((p) => ({
         uid: p.uid,
         alias: p.alias,
@@ -260,6 +496,19 @@ export function createWorldServer(options: WorldServerOptions): WorldServerInsta
         district: p.district,
         x: Math.round(p.x * 10) / 10,
         z: Math.round(p.z * 10) / 10,
+        drivingVehicleId: p.drivingVehicleId,
+      })),
+      vehicles: Array.from(sharedVehicles.values()).map((v) => ({
+        vehicleId: v.vehicleId,
+        model: v.model,
+        category: v.category,
+        plate: v.plate,
+        ownerUid: v.ownerUid,
+        ownerAlias: v.ownerAlias,
+        driverUid: v.driverUid,
+        state: v.state,
+        x: Math.round(v.x * 10) / 10,
+        z: Math.round(v.z * 10) / 10,
       })),
     });
   });
@@ -293,6 +542,7 @@ export function createWorldServer(options: WorldServerOptions): WorldServerInsta
       serverTimestamp: Date.now(),
       shardStats: {
         onlinePlayers: sharedPlayers.size,
+        activeVehicles: sharedVehicles.size,
         activeDistricts: ['distrito-central'],
         economyMode: 'mixed_authoritative_v2',
       },
@@ -315,12 +565,13 @@ export function createWorldServer(options: WorldServerOptions): WorldServerInsta
     nowFn,
   });
 
-  // Mount authoritative Module 4 vehicles, dealerships, garage, P2P marketplace, and admin routes
+  // Mount authoritative Module 4 & 5 vehicles, dealerships, garage, P2P, drivable spawn/store, and admin routes
   registerVehicleRoutes({
     app,
     backend: economyBackend,
     requireAuth: requireAuthMiddleware,
     nowFn,
+    worldVehicles: worldVehiclesController,
   });
 
   const httpServer = http.createServer(app);
@@ -339,6 +590,8 @@ export function createWorldServer(options: WorldServerOptions): WorldServerInsta
       windowStart: Date.now(),
       msgCountInWindow: 0,
       lastMoveTs: 0,
+      lastVehicleUpdateTs: 0,
+      lastSpeedWarnTs: 0,
     };
     socketMeta.set(ws, meta);
 
@@ -368,7 +621,7 @@ export function createWorldServer(options: WorldServerOptions): WorldServerInsta
         ws.close(1008, 'Rate limit exceeded');
         return;
       }
-      if (meta.msgCountInWindow > 35) {
+      if (meta.msgCountInWindow > 40) {
         return;
       }
 
@@ -418,6 +671,7 @@ export function createWorldServer(options: WorldServerOptions): WorldServerInsta
           }
 
           const spawn = sanitizeSpawn(msg.x, msg.z);
+          const existingPlayer = sharedPlayers.get(authenticatedUid);
           const state: SharedPlayerState = {
             uid: authenticatedUid,
             alias: sanitizeShortString(msg.alias, 'Cidadao', 24, /^[a-zA-Z0-9_-]+$/),
@@ -437,19 +691,21 @@ export function createWorldServer(options: WorldServerOptions): WorldServerInsta
             skinTone: sanitizeHex(msg.skinTone, '#D4A373'),
             style: sanitizeStyle(msg.style, 'urbano'),
             isMoving: false,
+            drivingVehicleId: existingPlayer?.drivingVehicleId ?? null,
             updatedAt: now,
           };
 
           uidToSocket.set(authenticatedUid, ws);
           sharedPlayers.set(authenticatedUid, state);
 
-          // Send complete fresh snapshot to the newly connected citizen
+          // Send complete fresh snapshot (players + active street vehicles) to the newly connected citizen
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(
               JSON.stringify({
                 type: 'world:snapshot',
                 selfUid: authenticatedUid,
                 players: Array.from(sharedPlayers.values()),
+                vehicles: Array.from(sharedVehicles.values()),
               })
             );
           }
@@ -480,6 +736,8 @@ export function createWorldServer(options: WorldServerOptions): WorldServerInsta
 
         const current = sharedPlayers.get(authenticatedUid);
         if (!current) return;
+        // Ignore on-foot move packets while seated inside a vehicle
+        if (current.drivingVehicleId) return;
 
         const nextX = clampCoord(msg.x, current.x);
         const nextZ = clampCoord(msg.z, current.z);
@@ -533,6 +791,324 @@ export function createWorldServer(options: WorldServerOptions): WorldServerInsta
           },
           ws
         );
+        return;
+      }
+
+      // =====================================================================
+      // MODULE 5: AUTHORITATIVE REAL-TIME VEHICLE CONTROL & SYNCHRONIZATION
+      // =====================================================================
+
+      if (type === 'vehicle:enter') {
+        const vehicleId = typeof msg.vehicleId === 'string' ? msg.vehicleId.trim() : '';
+        const vehicle = sharedVehicles.get(vehicleId);
+        const player = sharedPlayers.get(authenticatedUid);
+        if (!player || !vehicle) {
+          sendToUid(authenticatedUid, {
+            type: 'vehicle:error',
+            code: 'NOT_FOUND',
+            vehicleId,
+            message: 'Veículo não encontrado na cidade.',
+          });
+          return;
+        }
+
+        // Strict ownership & anti-hijack enforcement
+        if (vehicle.ownerUid !== authenticatedUid) {
+          recordVehicleEvent(
+            'rejected_control',
+            vehicle.vehicleId,
+            vehicle.plate,
+            authenticatedUid,
+            vehicle.ownerUid,
+            `Tentativa bloqueada de entrar no veículo de @${vehicle.ownerAlias}`
+          );
+          sendToUid(authenticatedUid, {
+            type: 'vehicle:error',
+            code: 'NOT_OWNER',
+            vehicleId,
+            message: 'Apenas o proprietário pode entrar e dirigir este veículo.',
+          });
+          return;
+        }
+
+        // Prevent simultaneous control by two players or entering while driving another car
+        if (vehicle.driverUid && vehicle.driverUid !== authenticatedUid) {
+          recordVehicleEvent(
+            'rejected_control',
+            vehicle.vehicleId,
+            vehicle.plate,
+            authenticatedUid,
+            vehicle.ownerUid,
+            'Tentativa bloqueada de controle simultâneo'
+          );
+          sendToUid(authenticatedUid, {
+            type: 'vehicle:error',
+            code: 'ALREADY_OCCUPIED',
+            vehicleId,
+            message: 'Este veículo já possui um motorista ativo.',
+          });
+          return;
+        }
+
+        if (player.drivingVehicleId && player.drivingVehicleId !== vehicleId) {
+          sendToUid(authenticatedUid, {
+            type: 'vehicle:error',
+            code: 'ALREADY_DRIVING',
+            vehicleId,
+            message: 'Saia do veículo atual antes de entrar em outro.',
+          });
+          return;
+        }
+
+        vehicle.driverUid = authenticatedUid;
+        vehicle.driverName = player.characterName;
+        vehicle.state = 'driving';
+        vehicle.updatedAt = now;
+
+        player.drivingVehicleId = vehicleId;
+        player.x = vehicle.x;
+        player.z = vehicle.z;
+        player.rotY = vehicle.rotY;
+        player.isMoving = false;
+        player.updatedAt = now;
+
+        recordVehicleEvent(
+          'enter',
+          vehicle.vehicleId,
+          vehicle.plate,
+          authenticatedUid,
+          vehicle.ownerUid,
+          `${player.characterName} assumiu a direção de ${vehicle.model} [${vehicle.plate}]`
+        );
+
+        // Broadcast to ALL clients (including driver) so everyone transitions atomically
+        broadcastJson({
+          type: 'vehicle:entered',
+          vehicleId,
+          driverUid: authenticatedUid,
+          driverName: player.characterName,
+          vehicle,
+        });
+        return;
+      }
+
+      if (type === 'vehicle:exit') {
+        const requestedId = typeof msg.vehicleId === 'string' ? msg.vehicleId.trim() : '';
+        const player = sharedPlayers.get(authenticatedUid);
+        const vehicleId = requestedId || player?.drivingVehicleId || '';
+        const vehicle = sharedVehicles.get(vehicleId);
+
+        if (!player || !vehicle) return;
+
+        if (vehicle.driverUid !== authenticatedUid) {
+          recordVehicleEvent(
+            'rejected_control',
+            vehicle.vehicleId,
+            vehicle.plate,
+            authenticatedUid,
+            vehicle.ownerUid,
+            'Tentativa bloqueada de sair de veículo não controlado pelo jogador'
+          );
+          sendToUid(authenticatedUid, {
+            type: 'vehicle:error',
+            code: 'NOT_DRIVER',
+            vehicleId,
+            message: 'Você não está dirigindo este veículo.',
+          });
+          return;
+        }
+
+        const exitPos = findSafeVehicleExitPosition(vehicle.x, vehicle.z, vehicle.rotY);
+
+        vehicle.driverUid = null;
+        vehicle.driverName = null;
+        vehicle.speed = 0;
+        vehicle.throttle = 0;
+        vehicle.steerAngle = 0;
+        vehicle.braking = false;
+        vehicle.handbrake = false;
+        vehicle.boost = false;
+        vehicle.state = 'parked';
+        vehicle.updatedAt = now;
+
+        player.drivingVehicleId = null;
+        player.x = exitPos.x;
+        player.z = exitPos.z;
+        player.isMoving = false;
+        player.updatedAt = now;
+
+        recordVehicleEvent(
+          'exit',
+          vehicle.vehicleId,
+          vehicle.plate,
+          authenticatedUid,
+          vehicle.ownerUid,
+          `${player.characterName} saiu de ${vehicle.model} [${vehicle.plate}] em (${exitPos.x}, ${exitPos.z})`
+        );
+
+        broadcastJson({
+          type: 'vehicle:exited',
+          vehicleId,
+          uid: authenticatedUid,
+          exitX: exitPos.x,
+          exitZ: exitPos.z,
+          vehicle,
+        });
+        return;
+      }
+
+      if (type === 'vehicle:update') {
+        const vehicleId = typeof msg.vehicleId === 'string' ? msg.vehicleId.trim() : '';
+        const vehicle = sharedVehicles.get(vehicleId);
+        const player = sharedPlayers.get(authenticatedUid);
+        if (!vehicle || !player) return;
+
+        // Strictly enforce single authoritative driver & owner
+        if (vehicle.driverUid !== authenticatedUid || vehicle.ownerUid !== authenticatedUid) {
+          recordVehicleEvent(
+            'rejected_control',
+            vehicle.vehicleId,
+            vehicle.plate,
+            authenticatedUid,
+            vehicle.ownerUid,
+            'Pacote vehicle:update rejeitado — remetente não é o motorista autorizado'
+          );
+          sendToUid(authenticatedUid, {
+            type: 'vehicle:error',
+            code: 'UNAUTHORIZED_CONTROL',
+            vehicleId,
+            message: 'Controle de veículo negado pelo servidor.',
+          });
+          return;
+        }
+
+        const rawSpeed = typeof msg.speed === 'number' && Number.isFinite(msg.speed) ? msg.speed : 0;
+        const isStopping = Math.abs(rawSpeed) < 0.05;
+        if (!isStopping && now - meta.lastVehicleUpdateTs < 26) {
+          return;
+        }
+        meta.lastVehicleUpdateTs = now;
+
+        // Validate numeric inputs
+        if (
+          typeof msg.x !== 'number' ||
+          !Number.isFinite(msg.x) ||
+          typeof msg.z !== 'number' ||
+          !Number.isFinite(msg.z) ||
+          typeof msg.rotY !== 'number' ||
+          !Number.isFinite(msg.rotY)
+        ) {
+          return;
+        }
+
+        const profile = getVehicleHandling(vehicle.category);
+        const nextX = clampCoord(msg.x, vehicle.x, VEHICLE_WORLD_BOUND);
+        const nextZ = clampCoord(msg.z, vehicle.z, VEHICLE_WORLD_BOUND);
+        const nextRotY = clampRotY(msg.rotY, vehicle.rotY);
+        const nextSteer = clampNumber(
+          msg.steerAngle,
+          0,
+          -profile.maxSteerAngle * 1.15,
+          profile.maxSteerAngle * 1.15
+        );
+        const nextThrottle = clampNumber(msg.throttle, 0, -1, 1);
+        const braking = msg.braking === true;
+        const handbrake = msg.handbrake === true;
+        const boost = msg.boost === true;
+
+        // Server-side anti-cheat speed & displacement verification
+        const dtSec = Math.max(0.05, Math.min(1.5, (now - vehicle.updatedAt) / 1000));
+        const maxLegalSpeed = profile.boostSpeed * 1.18;
+        const dist = Math.hypot(nextX - vehicle.x, nextZ - vehicle.z);
+        const maxLegalDist = maxLegalSpeed * dtSec + 2.8;
+
+        const speedViolation =
+          Math.abs(rawSpeed) > maxLegalSpeed ||
+          dist > maxLegalDist ||
+          collidesVehicleWithCity(nextX, nextZ, profile.collisionRadius * 0.7);
+
+        if (speedViolation) {
+          if (now - meta.lastSpeedWarnTs > 1200) {
+            meta.lastSpeedWarnTs = now;
+            recordVehicleEvent(
+              'rejected_speed',
+              vehicle.vehicleId,
+              vehicle.plate,
+              authenticatedUid,
+              vehicle.ownerUid,
+              `Deslocamento/velocidade inválido bloqueado (dist=${dist.toFixed(1)}m, vel=${rawSpeed.toFixed(1)}m/s)`
+            );
+          }
+          sendToUid(authenticatedUid, {
+            type: 'vehicle:correction',
+            vehicleId: vehicle.vehicleId,
+            x: vehicle.x,
+            z: vehicle.z,
+            rotY: vehicle.rotY,
+            speed: 0,
+            reason: 'Posição corrigida pelo servidor.',
+          });
+          return;
+        }
+
+        // Fuel guard: if tank is completely empty (0%), cap speed gently to crawl
+        const effectiveSpeed =
+          vehicle.fuelLevel <= 0 && Math.abs(rawSpeed) > 3.5
+            ? Math.sign(rawSpeed) * 3.5
+            : round2(rawSpeed);
+
+        vehicle.x = round2(nextX);
+        vehicle.z = round2(nextZ);
+        vehicle.rotY = Math.round(nextRotY * 1000) / 1000;
+        vehicle.speed = effectiveSpeed;
+        vehicle.steerAngle = Math.round(nextSteer * 1000) / 1000;
+        vehicle.throttle = round2(nextThrottle);
+        vehicle.braking = braking;
+        vehicle.handbrake = handbrake;
+        vehicle.boost = boost && vehicle.fuelLevel > 0;
+        vehicle.state = 'driving';
+        vehicle.sessionDistanceM = round2(vehicle.sessionDistanceM + dist);
+
+        // Authoritative gradual fuel consumption proportional to real distance driven
+        if (dist > 0.02 && vehicle.fuelLevel > 0) {
+          // 40 world meters ≈ 1 simulated city km for realistic district driving & refueling loop
+          const simKm = dist * 0.025;
+          const burn = simKm * profile.fuelBurnPerKm * (vehicle.boost ? 1.35 : 1);
+          vehicle.fuelLevel = Math.max(0, Math.round((vehicle.fuelLevel - burn) * 10000) / 10000);
+        }
+
+        vehicle.updatedAt = now;
+
+        // Keep driver's server coordinates synced to vehicle position
+        player.x = vehicle.x;
+        player.z = vehicle.z;
+        player.rotY = vehicle.rotY;
+        player.isMoving = false;
+        player.updatedAt = now;
+
+        broadcastJson(
+          {
+            type: 'vehicle:updated',
+            vehicleId: vehicle.vehicleId,
+            x: vehicle.x,
+            z: vehicle.z,
+            rotY: vehicle.rotY,
+            speed: vehicle.speed,
+            steerAngle: vehicle.steerAngle,
+            throttle: vehicle.throttle,
+            braking: vehicle.braking,
+            handbrake: vehicle.handbrake,
+            boost: vehicle.boost,
+            state: vehicle.state,
+            fuelLevel: vehicle.fuelLevel,
+            condition: vehicle.condition,
+            sessionDistanceM: vehicle.sessionDistanceM,
+            driverUid: vehicle.driverUid,
+            driverName: vehicle.driverName,
+            updatedAt: vehicle.updatedAt,
+          },
+          ws
+        );
       }
     });
 
@@ -583,5 +1159,13 @@ export function createWorldServer(options: WorldServerOptions): WorldServerInsta
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
   };
 
-  return { app, httpServer, wss, sharedPlayers, shutdown };
+  return {
+    app,
+    httpServer,
+    wss,
+    sharedPlayers,
+    sharedVehicles,
+    vehicleWorldEvents,
+    shutdown,
+  };
 }

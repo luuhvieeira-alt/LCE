@@ -51,7 +51,7 @@ function RemoteCitizenMesh({ player }: { player: RemotePlayerState }) {
 }
 
 export function RemotePlayers({ players }: { players: Record<string, RemotePlayerState> }) {
-  const list = Object.values(players);
+  const list = Object.values(players).filter((p) => !p.drivingVehicleId);
   if (list.length === 0) return null;
 
   return (

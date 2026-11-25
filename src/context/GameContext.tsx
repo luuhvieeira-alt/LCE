@@ -27,6 +27,9 @@ import type {
   ConnectionState,
   PlayerPositionPayload,
   RemotePlayerState,
+  SharedVehicleState,
+  VehicleCorrectionPayload,
+  VehicleMotionPayload,
 } from '../types/multiplayer';
 import type {
   BusinessApplication,
@@ -74,6 +77,8 @@ import {
 } from '../services/businessService';
 import {
   bootstrapInitialVehicleStock,
+  spawnVehicleToWorld,
+  storeVehicleInGarage,
   subscribeActiveVehicleListings,
   subscribeAvailableDealershipStock,
   subscribeMyVehicles,
@@ -123,6 +128,19 @@ interface GameContextValue {
   activeModule: GameModuleId;
   setActiveModule: (mod: GameModuleId) => void;
   remotePlayers: Record<string, RemotePlayerState>;
+  worldVehicles: Record<string, SharedVehicleState>;
+  drivingVehicleId: string | null;
+  mySpawnedVehicle: SharedVehicleState | null;
+  activeDrivenVehicle: SharedVehicleState | null;
+  pendingPlayerTeleport: { x: number; z: number; seq: number } | null;
+  vehicleCorrection: (VehicleCorrectionPayload & { seq: number }) | null;
+  vehicleNotice: { type: 'ok' | 'err'; text: string } | null;
+  clearVehicleNotice: () => void;
+  spawnVehicle: (vehicleId: string) => Promise<SharedVehicleState>;
+  storeVehicle: (vehicleId: string) => Promise<void>;
+  enterVehicle: (vehicleId: string) => void;
+  exitVehicle: (vehicleId?: string) => void;
+  reportLocalVehicleMotion: (payload: VehicleMotionPayload) => void;
   onlineCount: number;
   mpConnection: ConnectionState;
   playerCoords: { x: number; z: number };
@@ -187,6 +205,20 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
 
   const [activeModule, setActiveModuleState] = useState<GameModuleId>('mundo');
   const [remotePlayers, setRemotePlayers] = useState<Record<string, RemotePlayerState>>({});
+  const [worldVehicles, setWorldVehicles] = useState<Record<string, SharedVehicleState>>({});
+  const [drivingVehicleId, setDrivingVehicleId] = useState<string | null>(null);
+  const [pendingPlayerTeleport, setPendingPlayerTeleport] = useState<{
+    x: number;
+    z: number;
+    seq: number;
+  } | null>(null);
+  const [vehicleCorrection, setVehicleCorrection] = useState<
+    (VehicleCorrectionPayload & { seq: number }) | null
+  >(null);
+  const [vehicleNotice, setVehicleNotice] = useState<{
+    type: 'ok' | 'err';
+    text: string;
+  } | null>(null);
   const [mpConnection, setMpConnection] = useState<ConnectionState>('disconnected');
   const [playerCoords, setPlayerCoords] = useState<{ x: number; z: number }>({
     x: DEFAULT_SPAWN_X,
@@ -210,6 +242,16 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   });
   const firebaseUserRef = useRef<User | null>(null);
   const characterRef = useRef<CharacterProfile | null>(null);
+  const worldVehiclesRef = useRef<Record<string, SharedVehicleState>>({});
+  const drivingVehicleIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    worldVehiclesRef.current = worldVehicles;
+  }, [worldVehicles]);
+
+  useEffect(() => {
+    drivingVehicleIdRef.current = drivingVehicleId;
+  }, [drivingVehicleId]);
 
   useEffect(() => {
     firebaseUserRef.current = firebaseUser;
@@ -249,6 +291,9 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
         setAvailableDealershipStock([]);
         setActiveVehicleListings([]);
         setRemotePlayers({});
+        setWorldVehicles({});
+        setDrivingVehicleId(null);
+        setVehicleNotice(null);
         setMpConnection('disconnected');
         setActiveModuleState('mundo');
       }
@@ -411,19 +456,32 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
       {
         onConnectionChange: (state) => {
           setMpConnection(state);
-          // Clear stale remote avatars whenever connection drops so closed sessions never linger
+          // Clear stale remote avatars & vehicles whenever connection drops so closed sessions never linger
           if (state === 'disconnected' || state === 'reconnecting') {
             setRemotePlayers({});
+            setWorldVehicles({});
+            setDrivingVehicleId(null);
           }
         },
-        onSnapshot: (players, selfUid) => {
-          const next: Record<string, RemotePlayerState> = {};
+        onSnapshot: (players, vehicles, selfUid) => {
+          const nextPlayers: Record<string, RemotePlayerState> = {};
           for (const p of players) {
             if (p.uid !== selfUid) {
-              next[p.uid] = p;
+              nextPlayers[p.uid] = p;
             }
           }
-          setRemotePlayers(next);
+          setRemotePlayers(nextPlayers);
+
+          const nextVehicles: Record<string, SharedVehicleState> = {};
+          let selfDriven: string | null = null;
+          for (const v of vehicles) {
+            nextVehicles[v.vehicleId] = v;
+            if (v.driverUid === selfUid) {
+              selfDriven = v.vehicleId;
+            }
+          }
+          setWorldVehicles(nextVehicles);
+          setDrivingVehicleId(selfDriven);
         },
         onPlayerJoined: (player) => {
           if (player.uid === firebaseUser.uid) return;
@@ -465,6 +523,104 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
             return copy;
           });
         },
+        onVehicleSpawned: (vehicle) => {
+          setWorldVehicles((prev) => ({
+            ...prev,
+            [vehicle.vehicleId]: vehicle,
+          }));
+        },
+        onVehicleEntered: (vehicle, driverUid) => {
+          setWorldVehicles((prev) => ({
+            ...prev,
+            [vehicle.vehicleId]: vehicle,
+          }));
+          if (driverUid === firebaseUser.uid) {
+            setDrivingVehicleId(vehicle.vehicleId);
+          } else {
+            setRemotePlayers((prev) => {
+              const rp = prev[driverUid];
+              if (!rp) return prev;
+              return {
+                ...prev,
+                [driverUid]: {
+                  ...rp,
+                  drivingVehicleId: vehicle.vehicleId,
+                  isMoving: false,
+                },
+              };
+            });
+          }
+        },
+        onVehicleUpdated: (patch) => {
+          setWorldVehicles((prev) => {
+            const existing = prev[patch.vehicleId];
+            if (!existing) return prev;
+            return {
+              ...prev,
+              [patch.vehicleId]: {
+                ...existing,
+                x: patch.x,
+                z: patch.z,
+                rotY: patch.rotY,
+                speed: patch.speed,
+                steerAngle: patch.steerAngle,
+                throttle: patch.throttle,
+                braking: patch.braking,
+                handbrake: patch.handbrake,
+                boost: patch.boost,
+                state: patch.state,
+                fuelLevel: patch.fuelLevel,
+                condition: patch.condition,
+                sessionDistanceM: patch.sessionDistanceM,
+                driverUid: patch.driverUid,
+                driverName: patch.driverName,
+                updatedAt: patch.updatedAt,
+              },
+            };
+          });
+        },
+        onVehicleExited: (vehicle, uid, exitX, exitZ) => {
+          setWorldVehicles((prev) => ({
+            ...prev,
+            [vehicle.vehicleId]: vehicle,
+          }));
+          if (uid === firebaseUser.uid) {
+            setDrivingVehicleId(null);
+            latestPosRef.current = { ...latestPosRef.current, x: exitX, z: exitZ };
+            setPendingPlayerTeleport({ x: exitX, z: exitZ, seq: Date.now() });
+          } else {
+            setRemotePlayers((prev) => {
+              const rp = prev[uid];
+              if (!rp) return prev;
+              return {
+                ...prev,
+                [uid]: {
+                  ...rp,
+                  x: exitX,
+                  z: exitZ,
+                  drivingVehicleId: null,
+                  isMoving: false,
+                  updatedAt: Date.now(),
+                },
+              };
+            });
+          }
+        },
+        onVehicleDespawned: (vehicleId) => {
+          setWorldVehicles((prev) => {
+            if (!prev[vehicleId]) return prev;
+            const copy = { ...prev };
+            delete copy[vehicleId];
+            return copy;
+          });
+          setDrivingVehicleId((cur) => (cur === vehicleId ? null : cur));
+        },
+        onVehicleCorrection: (correction) => {
+          setVehicleCorrection({ ...correction, seq: Date.now() });
+        },
+        onVehicleError: (message) => {
+          setVehicleNotice({ type: 'err', text: message });
+        },
       }
     );
 
@@ -475,6 +631,8 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
       client.disconnect();
       mpClientRef.current = null;
       setRemotePlayers({});
+      setWorldVehicles({});
+      setDrivingVehicleId(null);
     };
   }, [firebaseUser, character?.uid]);
 
@@ -546,11 +704,107 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     [firebaseUser]
   );
 
+  const clearVehicleNotice = useCallback(() => {
+    setVehicleNotice(null);
+  }, []);
+
+  const spawnVehicle = useCallback(async (vehicleId: string): Promise<SharedVehicleState> => {
+    const user = firebaseUserRef.current;
+    if (!user) {
+      throw new Error('Sessão não autenticada.');
+    }
+    const res = await spawnVehicleToWorld(user, vehicleId);
+    setWorldVehicles((prev) => ({
+      ...prev,
+      [res.vehicle.vehicleId]: res.vehicle,
+    }));
+    setVehicleNotice({
+      type: 'ok',
+      text: `${res.vehicle.model} [${res.vehicle.plate}] materializado em ${res.bay.label}. Aproxime-se para entrar.`,
+    });
+    return res.vehicle;
+  }, []);
+
+  const storeVehicle = useCallback(async (vehicleId: string): Promise<void> => {
+    const user = firebaseUserRef.current;
+    if (!user) {
+      throw new Error('Sessão não autenticada.');
+    }
+    const res = await storeVehicleInGarage(user, vehicleId);
+    setWorldVehicles((prev) => {
+      if (!prev[vehicleId]) return prev;
+      const copy = { ...prev };
+      delete copy[vehicleId];
+      return copy;
+    });
+    setDrivingVehicleId((cur) => (cur === vehicleId ? null : cur));
+    setVehicleNotice({
+      type: 'ok',
+      text: `Veículo [${res.plate}] guardado na Garagem Central (${res.mileageKm} km · combustível ${Math.round(res.fuelLevel)}% · conservação ${res.condition}%).`,
+    });
+  }, []);
+
+  const enterVehicle = useCallback((vehicleId: string) => {
+    setVehicleNotice(null);
+    mpClientRef.current?.sendVehicleEnter(vehicleId);
+  }, []);
+
+  const exitVehicle = useCallback((vehicleId?: string) => {
+    const targetId = vehicleId ?? drivingVehicleIdRef.current;
+    if (!targetId) return;
+    mpClientRef.current?.sendVehicleExit(targetId);
+  }, []);
+
+  const reportLocalVehicleMotion = useCallback((payload: VehicleMotionPayload) => {
+    latestPosRef.current = { x: payload.x, z: payload.z, rotY: payload.rotY };
+    mpClientRef.current?.sendVehicleMotion(payload);
+
+    // Update local vehicle snapshot in state at throttled cadence so HUD gauges stay responsive
+    const now = performance.now();
+    if (now - coordsUpdateRef.current > 120) {
+      coordsUpdateRef.current = now;
+      setPlayerCoords({
+        x: Math.round(payload.x * 10) / 10,
+        z: Math.round(payload.z * 10) / 10,
+      });
+      setWorldVehicles((prev) => {
+        const cur = prev[payload.vehicleId];
+        if (!cur) return prev;
+        return {
+          ...prev,
+          [payload.vehicleId]: {
+            ...cur,
+            x: payload.x,
+            z: payload.z,
+            rotY: payload.rotY,
+            speed: payload.speed,
+            steerAngle: payload.steerAngle,
+            throttle: payload.throttle,
+            braking: payload.braking,
+            handbrake: payload.handbrake,
+            boost: payload.boost,
+            updatedAt: Date.now(),
+          },
+        };
+      });
+    }
+  }, []);
+
   const signOutUser = useCallback(async () => {
-    // Save final location checkpoint before disconnecting & signing out
+    // Store any active street vehicle cleanly before signing out so mileage/fuel/condition persist
     const user = firebaseUserRef.current;
     const char = characterRef.current;
     if (user && user.emailVerified && char && char.status === 'active') {
+      const ownedActive = Object.values(worldVehiclesRef.current).find(
+        (v) => v.ownerUid === user.uid
+      );
+      if (ownedActive) {
+        try {
+          await storeVehicleInGarage(user, ownedActive.vehicleId);
+        } catch {
+          // Server disconnect cleanup will still despawn it safely
+        }
+      }
       try {
         await updateCharacterLocation(user.uid, {
           lastX: latestPosRef.current.x,
@@ -564,6 +818,8 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     mpClientRef.current?.disconnect();
     mpClientRef.current = null;
     setRemotePlayers({});
+    setWorldVehicles({});
+    setDrivingVehicleId(null);
     await logoutSession();
   }, []);
 
@@ -586,6 +842,16 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     () => workSessions.find((s) => s.status === 'in_progress') ?? null,
     [workSessions]
   );
+
+  const mySpawnedVehicle = useMemo(() => {
+    if (!firebaseUser) return null;
+    return Object.values(worldVehicles).find((v) => v.ownerUid === firebaseUser.uid) ?? null;
+  }, [worldVehicles, firebaseUser]);
+
+  const activeDrivenVehicle = useMemo(() => {
+    if (!drivingVehicleId) return null;
+    return worldVehicles[drivingVehicleId] ?? null;
+  }, [worldVehicles, drivingVehicleId]);
 
   const value = useMemo<GameContextValue>(
     () => ({
@@ -626,6 +892,19 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
       activeModule,
       setActiveModule,
       remotePlayers,
+      worldVehicles,
+      drivingVehicleId,
+      mySpawnedVehicle,
+      activeDrivenVehicle,
+      pendingPlayerTeleport,
+      vehicleCorrection,
+      vehicleNotice,
+      clearVehicleNotice,
+      spawnVehicle,
+      storeVehicle,
+      enterVehicle,
+      exitVehicle,
+      reportLocalVehicleMotion,
       onlineCount,
       mpConnection,
       playerCoords,
@@ -674,6 +953,19 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
       activeModule,
       setActiveModule,
       remotePlayers,
+      worldVehicles,
+      drivingVehicleId,
+      mySpawnedVehicle,
+      activeDrivenVehicle,
+      pendingPlayerTeleport,
+      vehicleCorrection,
+      vehicleNotice,
+      clearVehicleNotice,
+      spawnVehicle,
+      storeVehicle,
+      enterVehicle,
+      exitVehicle,
+      reportLocalVehicleMotion,
       onlineCount,
       mpConnection,
       playerCoords,

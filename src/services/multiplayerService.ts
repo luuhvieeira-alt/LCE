@@ -2,16 +2,55 @@ import type {
   ConnectionState,
   PlayerPositionPayload,
   RemotePlayerState,
+  SharedVehicleState,
+  VehicleCorrectionPayload,
+  VehicleMotionPayload,
 } from '../types/multiplayer';
 import type { CharacterProfile, UpdateAppearanceInput } from '../types/character';
 
+export interface VehicleStatePatch {
+  vehicleId: string;
+  x: number;
+  z: number;
+  rotY: number;
+  speed: number;
+  steerAngle: number;
+  throttle: number;
+  braking: boolean;
+  handbrake: boolean;
+  boost: boolean;
+  state: 'parked' | 'driving';
+  fuelLevel: number;
+  condition: number;
+  sessionDistanceM: number;
+  driverUid: string | null;
+  driverName: string | null;
+  updatedAt: number;
+}
+
 export interface MultiplayerCallbacks {
   onConnectionChange: (state: ConnectionState) => void;
-  onSnapshot: (players: RemotePlayerState[], selfUid: string) => void;
+  onSnapshot: (
+    players: RemotePlayerState[],
+    vehicles: SharedVehicleState[],
+    selfUid: string
+  ) => void;
   onPlayerJoined: (player: RemotePlayerState) => void;
   onPlayerUpdated: (player: RemotePlayerState) => void;
   onPlayerMoved: (uid: string, x: number, z: number, rotY: number, isMoving: boolean) => void;
   onPlayerLeft: (uid: string) => void;
+  onVehicleSpawned: (vehicle: SharedVehicleState) => void;
+  onVehicleEntered: (vehicle: SharedVehicleState, driverUid: string) => void;
+  onVehicleUpdated: (patch: VehicleStatePatch) => void;
+  onVehicleExited: (
+    vehicle: SharedVehicleState,
+    uid: string,
+    exitX: number,
+    exitZ: number
+  ) => void;
+  onVehicleDespawned: (vehicleId: string, reason: string) => void;
+  onVehicleCorrection: (correction: VehicleCorrectionPayload) => void;
+  onVehicleError: (message: string) => void;
 }
 
 export class SharedWorldClient {
@@ -21,7 +60,9 @@ export class SharedWorldClient {
   private reconnectAttempts = 0;
   private destroyed = false;
   private lastSentAt = 0;
+  private lastVehicleSentAt = 0;
   private wasMoving = false;
+  private wasVehicleMoving = false;
   private lastKnownPos: { x: number; z: number; rotY: number };
   private getToken: () => Promise<string | null>;
   private character: CharacterProfile;
@@ -99,8 +140,11 @@ export class SharedWorldClient {
             const players = Array.isArray(msg.players)
               ? (msg.players as RemotePlayerState[])
               : [];
+            const vehicles = Array.isArray(msg.vehicles)
+              ? (msg.vehicles as SharedVehicleState[])
+              : [];
             const selfUid = typeof msg.selfUid === 'string' ? msg.selfUid : this.character.uid;
-            this.callbacks.onSnapshot(players, selfUid);
+            this.callbacks.onSnapshot(players, vehicles, selfUid);
             break;
           }
           case 'player:joined': {
@@ -135,6 +179,108 @@ export class SharedWorldClient {
           case 'player:left': {
             if (typeof msg.uid === 'string') {
               this.callbacks.onPlayerLeft(msg.uid);
+            }
+            break;
+          }
+          case 'vehicle:spawned': {
+            if (msg.vehicle && typeof msg.vehicle === 'object') {
+              this.callbacks.onVehicleSpawned(msg.vehicle as SharedVehicleState);
+            }
+            break;
+          }
+          case 'vehicle:entered': {
+            if (
+              msg.vehicle &&
+              typeof msg.vehicle === 'object' &&
+              typeof msg.driverUid === 'string'
+            ) {
+              this.callbacks.onVehicleEntered(
+                msg.vehicle as SharedVehicleState,
+                msg.driverUid
+              );
+            }
+            break;
+          }
+          case 'vehicle:updated': {
+            if (
+              typeof msg.vehicleId === 'string' &&
+              typeof msg.x === 'number' &&
+              typeof msg.z === 'number' &&
+              typeof msg.rotY === 'number'
+            ) {
+              this.callbacks.onVehicleUpdated({
+                vehicleId: msg.vehicleId,
+                x: msg.x,
+                z: msg.z,
+                rotY: msg.rotY,
+                speed: typeof msg.speed === 'number' ? msg.speed : 0,
+                steerAngle: typeof msg.steerAngle === 'number' ? msg.steerAngle : 0,
+                throttle: typeof msg.throttle === 'number' ? msg.throttle : 0,
+                braking: msg.braking === true,
+                handbrake: msg.handbrake === true,
+                boost: msg.boost === true,
+                state: msg.state === 'driving' ? 'driving' : 'parked',
+                fuelLevel: typeof msg.fuelLevel === 'number' ? msg.fuelLevel : 100,
+                condition: typeof msg.condition === 'number' ? msg.condition : 100,
+                sessionDistanceM:
+                  typeof msg.sessionDistanceM === 'number' ? msg.sessionDistanceM : 0,
+                driverUid: typeof msg.driverUid === 'string' ? msg.driverUid : null,
+                driverName: typeof msg.driverName === 'string' ? msg.driverName : null,
+                updatedAt: typeof msg.updatedAt === 'number' ? msg.updatedAt : Date.now(),
+              });
+            }
+            break;
+          }
+          case 'vehicle:exited': {
+            if (
+              msg.vehicle &&
+              typeof msg.vehicle === 'object' &&
+              typeof msg.uid === 'string' &&
+              typeof msg.exitX === 'number' &&
+              typeof msg.exitZ === 'number'
+            ) {
+              this.callbacks.onVehicleExited(
+                msg.vehicle as SharedVehicleState,
+                msg.uid,
+                msg.exitX,
+                msg.exitZ
+              );
+            }
+            break;
+          }
+          case 'vehicle:despawned': {
+            if (typeof msg.vehicleId === 'string') {
+              this.callbacks.onVehicleDespawned(
+                msg.vehicleId,
+                typeof msg.reason === 'string' ? msg.reason : 'store'
+              );
+            }
+            break;
+          }
+          case 'vehicle:correction': {
+            if (
+              typeof msg.vehicleId === 'string' &&
+              typeof msg.x === 'number' &&
+              typeof msg.z === 'number' &&
+              typeof msg.rotY === 'number'
+            ) {
+              this.callbacks.onVehicleCorrection({
+                vehicleId: msg.vehicleId,
+                x: msg.x,
+                z: msg.z,
+                rotY: msg.rotY,
+                speed: typeof msg.speed === 'number' ? msg.speed : 0,
+                reason:
+                  typeof msg.reason === 'string'
+                    ? msg.reason
+                    : 'Posição sincronizada pelo servidor.',
+              });
+            }
+            break;
+          }
+          case 'vehicle:error': {
+            if (typeof msg.message === 'string') {
+              this.callbacks.onVehicleError(msg.message);
             }
             break;
           }
@@ -205,6 +351,48 @@ export class SharedWorldClient {
         accentColor: input.accentColor,
         skinTone: input.skinTone,
         style: input.style,
+      })
+    );
+  }
+
+  public sendVehicleEnter(vehicleId: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ type: 'vehicle:enter', vehicleId }));
+  }
+
+  public sendVehicleExit(vehicleId: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ type: 'vehicle:exit', vehicleId }));
+  }
+
+  public sendVehicleMotion(payload: VehicleMotionPayload): void {
+    const movingNow =
+      Math.abs(payload.speed) > 0.08 ||
+      Math.abs(payload.throttle) > 0.05 ||
+      Math.abs(payload.steerAngle) > 0.04;
+    const stoppedTransition = this.wasVehicleMoving && !movingNow;
+    this.wasVehicleMoving = movingNow;
+
+    const now = performance.now();
+    // Smooth ~18Hz vehicle sync while driving, immediate flush on full stop, 650ms keepalive when idling
+    if (!stoppedTransition && now - this.lastVehicleSentAt < 54) return;
+    if (!movingNow && !stoppedTransition && now - this.lastVehicleSentAt < 650) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+    this.lastVehicleSentAt = now;
+    this.ws.send(
+      JSON.stringify({
+        type: 'vehicle:update',
+        vehicleId: payload.vehicleId,
+        x: Math.round(payload.x * 100) / 100,
+        z: Math.round(payload.z * 100) / 100,
+        rotY: Math.round(payload.rotY * 1000) / 1000,
+        speed: Math.round(payload.speed * 100) / 100,
+        steerAngle: Math.round(payload.steerAngle * 1000) / 1000,
+        throttle: Math.round(payload.throttle * 100) / 100,
+        braking: payload.braking,
+        handbrake: payload.handbrake,
+        boost: payload.boost,
       })
     );
   }

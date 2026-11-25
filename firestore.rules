@@ -2319,17 +2319,18 @@ service cloud.firestore {
             && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.operationId == vehicleId
           )
           ||
-          // Owner usage wear (mileage strictly increases; fuel/condition/marketValue never increase)
+          // Owner usage wear & garage storage (mileage strictly increases; fuel/condition/marketValue never increase; status only in_garage/parked)
           (
             existing().ownerUid == request.auth.uid
             && incoming().ownerUid == existing().ownerUid
             && existing().status != 'listed'
+            && incoming().status in ['in_garage', 'parked']
             && incoming().mileageKm >= existing().mileageKm
             && incoming().condition <= existing().condition
             && incoming().fuelLevel <= existing().fuelLevel
             && incoming().marketValue <= existing().marketValue
             && incoming().diff(existing()).affectedKeys().hasOnly([
-              'condition', 'fuelLevel', 'mileageKm', 'marketValue', 'parkedZone', 'parkedX', 'parkedZ', 'updatedAt'
+              'status', 'condition', 'fuelLevel', 'mileageKm', 'marketValue', 'parkedZone', 'parkedX', 'parkedZ', 'updatedAt'
             ])
           )
           ||
