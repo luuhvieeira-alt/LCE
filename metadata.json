@@ -1,0 +1,6 @@
+{
+  "name": "LIFE CRIMINAL EXPERIENCE (LCE)",
+  "description": "Jogo multiplayer online de simulação de vida urbana em 3D no navegador com universo compartilhado, economia mista e arquitetura modular.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

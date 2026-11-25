@@ -1,0 +1,2565 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Global Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'luuhvieeira@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin()
+        || (isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    function isHexColor(val) {
+      return val is string && val.size() == 7 && val.matches('^#[0-9a-fA-F]{6}$');
+    }
+
+    function approxEqual(a, b) {
+      return (a - b) >= -0.001 && (a - b) <= 0.001;
+    }
+
+    function initialCleanCashTarget() {
+      return exists(/databases/$(database)/documents/economyConfig/global)
+        && ('initialCleanCash' in get(/databases/$(database)/documents/economyConfig/global).data)
+        ? get(/databases/$(database)/documents/economyConfig/global).data.initialCleanCash
+        : 500;
+    }
+
+    function initialBankBalanceTarget() {
+      return exists(/databases/$(database)/documents/economyConfig/global)
+        && ('initialBankBalance' in get(/databases/$(database)/documents/economyConfig/global).data)
+        ? get(/databases/$(database)/documents/economyConfig/global).data.initialBankBalance
+        : 1000;
+    }
+
+    // 3. Entity Validation Blueprints (Synchronized verbatim with firebase-blueprint.json)
+    function isValidCharacterProfile(data, expectedUid) {
+      return data.keys().hasAll([
+          'uid', 'characterName', 'alias', 'origin', 'district',
+          'coatColor', 'accentColor', 'skinTone', 'style',
+          'level', 'reputation', 'cashBalance', 'bankBalance',
+          'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'characterName', 'alias', 'origin', 'district',
+          'coatColor', 'accentColor', 'skinTone', 'style',
+          'level', 'experience', 'reputation', 'cashBalance', 'bankBalance',
+          'lastX', 'lastZ', 'lastRotY',
+          'status', 'createdAt', 'updatedAt'
+        ])
+        && data.uid is string
+        && data.uid.size() >= 1 && data.uid.size() <= 128
+        && data.uid == expectedUid
+        && data.characterName is string
+        && data.characterName.size() >= 3 && data.characterName.size() <= 32
+        && data.characterName.matches('^[a-zA-Z0-9À-ÿ _\\-]+$')
+        && data.alias is string
+        && data.alias.size() >= 2 && data.alias.size() <= 24
+        && data.alias.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.origin in ['comerciante', 'operario', 'corretor', 'independente']
+        && data.district in ['distrito-central']
+        && isHexColor(data.coatColor)
+        && isHexColor(data.accentColor)
+        && isHexColor(data.skinTone)
+        && data.style in ['executivo', 'urbano', 'tatico']
+        && data.level is number && data.level >= 1 && data.level <= 100
+        && (!('experience' in data) || (data.experience is number && data.experience >= 0 && data.experience <= 10000000))
+        && data.reputation is number && data.reputation >= -1000 && data.reputation <= 100000
+        && data.cashBalance is number && data.cashBalance >= 0 && data.cashBalance <= 1000000000
+        && data.bankBalance is number && data.bankBalance >= 0 && data.bankBalance <= 1000000000
+        && (!('lastX' in data) || (data.lastX is number && data.lastX >= -36 && data.lastX <= 36))
+        && (!('lastZ' in data) || (data.lastZ is number && data.lastZ >= -36 && data.lastZ <= 36))
+        && (!('lastRotY' in data) || (data.lastRotY is number && data.lastRotY >= -7 && data.lastRotY <= 7))
+        && data.status in ['active', 'suspended']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPrivateAccount(data, expectedUid) {
+      return data.keys().hasAll(['uid', 'email', 'provider', 'createdAt', 'lastLoginAt'])
+        && data.keys().hasOnly(['uid', 'email', 'provider', 'createdAt', 'lastLoginAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == expectedUid
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.provider in ['google', 'password']
+        && data.createdAt is timestamp
+        && data.lastLoginAt is timestamp;
+    }
+
+    function isValidAdminRecord(data, expectedUid) {
+      return data.keys().hasAll(['uid', 'role', 'label', 'grantedBy', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'role', 'label', 'grantedBy', 'createdAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == expectedUid
+        && data.role in ['super_admin', 'economy_admin', 'moderator']
+        && data.label is string && data.label.size() >= 2 && data.label.size() <= 64
+        && data.grantedBy is string && data.grantedBy.size() >= 1 && data.grantedBy.size() <= 128
+        && data.createdAt is timestamp;
+    }
+
+    function isValidEconomyConfig(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'cityName', 'taxRatePercent', 'baseSalaryHourly',
+          'baseFuelPrice', 'basePropertyPrice', 'marketOpen',
+          'updatedBy', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'cityName', 'taxRatePercent', 'baseSalaryHourly',
+          'baseFuelPrice', 'basePropertyPrice',
+          'initialCleanCash', 'initialBankBalance', 'defaultMaxDailyPayouts',
+          'marketOpen', 'updatedBy', 'updatedAt'
+        ])
+        && data.id is string && data.id.size() >= 1 && data.id.size() <= 64 && data.id == expectedId
+        && data.cityName is string && data.cityName.size() >= 3 && data.cityName.size() <= 64
+        && data.taxRatePercent is number && data.taxRatePercent >= 0 && data.taxRatePercent <= 50
+        && data.baseSalaryHourly is number && data.baseSalaryHourly >= 10 && data.baseSalaryHourly <= 10000
+        && data.baseFuelPrice is number && data.baseFuelPrice >= 1 && data.baseFuelPrice <= 500
+        && data.basePropertyPrice is number && data.basePropertyPrice >= 1000 && data.basePropertyPrice <= 10000000
+        && (!('initialCleanCash' in data) || (data.initialCleanCash is number && data.initialCleanCash >= 0 && data.initialCleanCash <= 1000000))
+        && (!('initialBankBalance' in data) || (data.initialBankBalance is number && data.initialBankBalance >= 0 && data.initialBankBalance <= 1000000))
+        && (!('defaultMaxDailyPayouts' in data) || (data.defaultMaxDailyPayouts is number && data.defaultMaxDailyPayouts >= 1 && data.defaultMaxDailyPayouts <= 100))
+        && data.marketOpen is bool
+        && data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128 && data.updatedBy == request.auth.uid
+        && data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidWallet(data, expectedUid) {
+      return data.keys().hasAll([
+          'uid', 'cleanCash', 'dirtyCash', 'companiesValue', 'realEstateValue',
+          'vehiclesValue', 'investmentsValue', 'otherAssetsValue', 'lastTxId',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'cleanCash', 'dirtyCash', 'companiesValue', 'realEstateValue',
+          'vehiclesValue', 'investmentsValue', 'otherAssetsValue', 'lastTxId',
+          'createdAt', 'updatedAt'
+        ])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == expectedUid
+        && data.cleanCash is number && data.cleanCash >= 0 && data.cleanCash <= 1000000000
+        && data.dirtyCash is number && data.dirtyCash >= 0 && data.dirtyCash <= 1000000000
+        && data.companiesValue is number && data.companiesValue >= 0 && data.companiesValue <= 1000000000
+        && data.realEstateValue is number && data.realEstateValue >= 0 && data.realEstateValue <= 1000000000
+        && data.vehiclesValue is number && data.vehiclesValue >= 0 && data.vehiclesValue <= 1000000000
+        && data.investmentsValue is number && data.investmentsValue >= 0 && data.investmentsValue <= 1000000000
+        && data.otherAssetsValue is number && data.otherAssetsValue >= 0 && data.otherAssetsValue <= 1000000000
+        && data.lastTxId is string && data.lastTxId.size() >= 1 && data.lastTxId.size() <= 128 && isValidId(data.lastTxId)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBankAccount(data, expectedUid) {
+      return data.keys().hasAll([
+          'uid', 'accountNumber', 'bankName', 'balance', 'status', 'lastTxId', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'accountNumber', 'bankName', 'balance', 'status', 'lastTxId', 'createdAt', 'updatedAt'
+        ])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == expectedUid
+        && data.accountNumber is string && data.accountNumber.size() >= 6 && data.accountNumber.size() <= 24 && data.accountNumber.matches('^[A-Z0-9\\-]+$')
+        && data.bankName is string && data.bankName.size() >= 3 && data.bankName.size() <= 48
+        && data.balance is number && data.balance >= 0 && data.balance <= 1000000000
+        && data.status in ['active', 'frozen']
+        && data.lastTxId is string && data.lastTxId.size() >= 1 && data.lastTxId.size() <= 128 && isValidId(data.lastTxId)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBankDirectory(data, expectedUid) {
+      return data.keys().hasAll(['uid', 'characterName', 'alias', 'accountNumber', 'active', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'characterName', 'alias', 'accountNumber', 'active', 'updatedAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == expectedUid
+        && data.characterName is string && data.characterName.size() >= 3 && data.characterName.size() <= 32
+        && data.alias is string && data.alias.size() >= 2 && data.alias.size() <= 24
+        && data.accountNumber is string && data.accountNumber.size() >= 6 && data.accountNumber.size() <= 24
+        && data.active is bool
+        && data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidTransaction(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'operationId', 'type', 'currencyCategory', 'amount',
+          'fromUid', 'fromLabel', 'toUid', 'toLabel', 'actorUid',
+          'participants', 'description', 'status', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'operationId', 'type', 'currencyCategory', 'amount',
+          'fromUid', 'fromLabel', 'toUid', 'toLabel', 'actorUid',
+          'participants', 'description', 'status', 'createdAt'
+        ])
+        && data.id is string && data.id.size() >= 4 && data.id.size() <= 128 && data.id == expectedId
+        && data.operationId is string && data.operationId.size() >= 4 && data.operationId.size() <= 128 && isValidId(data.operationId)
+        && data.type in [
+          'deposit', 'withdraw', 'transfer', 'salary', 'admin_adjustment',
+          'business_purchase', 'business_sale', 'business_payroll', 'business_capital',
+          'vehicle_purchase', 'vehicle_p2p_sale', 'vehicle_maintenance', 'vehicle_commission'
+        ]
+        && data.currencyCategory in ['clean_cash', 'bank', 'dirty_cash']
+        && data.amount is number && data.amount > 0 && data.amount <= 100000000
+        && data.fromUid is string && data.fromUid.size() >= 1 && data.fromUid.size() <= 128
+        && data.fromLabel is string && data.fromLabel.size() >= 1 && data.fromLabel.size() <= 64
+        && data.toUid is string && data.toUid.size() >= 1 && data.toUid.size() <= 128
+        && data.toLabel is string && data.toLabel.size() >= 1 && data.toLabel.size() <= 64
+        && data.actorUid is string && data.actorUid.size() >= 1 && data.actorUid.size() <= 128 && data.actorUid == request.auth.uid
+        && data.participants is list && data.participants.size() >= 1 && data.participants.size() <= 2
+        && data.participants[0] is string && data.participants[0].size() <= 128
+        && (data.participants.size() == 1 || (data.participants[1] is string && data.participants[1].size() <= 128))
+        && data.description is string && data.description.size() >= 3 && data.description.size() <= 180
+        && data.status == 'completed'
+        && data.createdAt is timestamp && data.createdAt == request.time;
+    }
+
+    function isValidJobDefinition(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'name', 'description', 'baseSalary', 'durationSeconds',
+          'cooldownSeconds', 'maxDailyPayouts', 'minLevel', 'requiredExperience',
+          'xpReward', 'reputationReward', 'available', 'isCatalogJob', 'updatedBy', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'name', 'description', 'baseSalary', 'durationSeconds',
+          'cooldownSeconds', 'maxDailyPayouts', 'minLevel', 'requiredExperience',
+          'xpReward', 'reputationReward', 'available', 'isCatalogJob', 'updatedBy', 'updatedAt'
+        ])
+        && data.id is string && data.id.size() >= 2 && data.id.size() <= 40 && data.id == expectedId
+        && data.name is string && data.name.size() >= 3 && data.name.size() <= 64
+        && data.description is string && data.description.size() >= 6 && data.description.size() <= 240
+        && data.baseSalary is number && data.baseSalary >= 10 && data.baseSalary <= 50000
+        && data.durationSeconds is number && data.durationSeconds >= 10 && data.durationSeconds <= 3600
+        && data.cooldownSeconds is number && data.cooldownSeconds >= 5 && data.cooldownSeconds <= 86400
+        && data.maxDailyPayouts is number && data.maxDailyPayouts >= 1 && data.maxDailyPayouts <= 100
+        && data.minLevel is number && data.minLevel >= 1 && data.minLevel <= 100
+        && data.requiredExperience is number && data.requiredExperience >= 0 && data.requiredExperience <= 100000
+        && data.xpReward is number && data.xpReward >= 1 && data.xpReward <= 5000
+        && data.reputationReward is number && data.reputationReward >= 0 && data.reputationReward <= 500
+        && data.available is bool
+        && data.isCatalogJob == true
+        && data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128 && data.updatedBy == request.auth.uid
+        && data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidWorkSession(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'uid', 'jobId', 'jobName', 'status', 'durationSeconds', 'expectedSalary', 'xpReward', 'startedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'uid', 'jobId', 'jobName', 'status', 'durationSeconds', 'expectedSalary', 'xpReward',
+          'startedAt', 'completedAt', 'payoutTxId'
+        ])
+        && data.id is string && data.id.size() >= 4 && data.id.size() <= 128 && data.id == expectedId
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
+        && data.jobId in ['entregador', 'supermercado', 'motorista', 'mecanico']
+        && data.jobName is string && data.jobName.size() >= 3 && data.jobName.size() <= 64
+        && data.status in ['in_progress', 'completed', 'cancelled']
+        && data.durationSeconds is number && data.durationSeconds >= 10 && data.durationSeconds <= 3600
+        && data.expectedSalary is number && data.expectedSalary >= 10 && data.expectedSalary <= 100000
+        && data.xpReward is number && data.xpReward >= 1 && data.xpReward <= 5000
+        && data.startedAt is timestamp
+        && (!('completedAt' in data) || data.completedAt is timestamp)
+        && (!('payoutTxId' in data) || (data.payoutTxId is string && data.payoutTxId.size() <= 128));
+    }
+
+    function isValidSalaryPayment(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'sessionId', 'uid', 'jobId', 'jobName', 'amount', 'xpAwarded', 'tierLabel', 'txId', 'paidAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'sessionId', 'uid', 'jobId', 'jobName', 'amount', 'xpAwarded', 'tierLabel', 'txId', 'paidAt'
+        ])
+        && data.id is string && data.id.size() >= 4 && data.id.size() <= 128 && data.id == expectedId
+        && data.sessionId is string && data.sessionId == expectedId
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == request.auth.uid
+        && data.jobId in ['entregador', 'supermercado', 'motorista', 'mecanico']
+        && data.jobName is string && data.jobName.size() >= 3 && data.jobName.size() <= 64
+        && data.amount is number && data.amount >= 10 && data.amount <= 100000
+        && data.xpAwarded is number && data.xpAwarded >= 1 && data.xpAwarded <= 5000
+        && data.tierLabel in ['Iniciante', 'Intermediário', 'Experiente', 'Especialista', 'Mestre']
+        && data.txId is string && data.txId.size() >= 4 && data.txId.size() <= 128 && isValidId(data.txId)
+        && data.paidAt is timestamp && data.paidAt == request.time;
+    }
+
+    function isValidJobExperience(data, expectedUid) {
+      return data.keys().hasAll([
+          'uid', 'totalXp', 'entregadorXp', 'supermercadoXp', 'motoristaXp', 'mecanicoXp',
+          'lastSessionId', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'totalXp', 'entregadorXp', 'supermercadoXp', 'motoristaXp', 'mecanicoXp',
+          'lastSessionId', 'createdAt', 'updatedAt'
+        ])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == expectedUid
+        && data.totalXp is number && data.totalXp >= 0 && data.totalXp <= 10000000
+        && data.entregadorXp is number && data.entregadorXp >= 0 && data.entregadorXp <= 10000000
+        && data.supermercadoXp is number && data.supermercadoXp >= 0 && data.supermercadoXp <= 10000000
+        && data.motoristaXp is number && data.motoristaXp >= 0 && data.motoristaXp <= 10000000
+        && data.mecanicoXp is number && data.mecanicoXp >= 0 && data.mecanicoXp <= 10000000
+        && data.lastSessionId is string && data.lastSessionId.size() >= 1 && data.lastSessionId.size() <= 128 && isValidId(data.lastSessionId)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAdminLog(data) {
+      return data.keys().hasAll(['actorUid', 'action', 'summary', 'createdAt'])
+        && data.keys().hasOnly(['actorUid', 'action', 'targetUid', 'summary', 'createdAt'])
+        && data.actorUid is string && data.actorUid.size() >= 1 && data.actorUid.size() <= 128 && data.actorUid == request.auth.uid
+        && data.action in [
+          'update_economy_config',
+          'bootstrap_admin',
+          'update_citizen_status',
+          'update_job_config',
+          'admin_balance_adjustment',
+          'create_business_location',
+          'update_business_location',
+          'admin_business_action',
+          'create_vehicle_model',
+          'update_vehicle_model',
+          'suspend_vehicle_listing',
+          'admin_vehicle_action'
+        ]
+        && (!('targetUid' in data) || (data.targetUid is string && data.targetUid.size() <= 128))
+        && data.summary is string && data.summary.size() >= 3 && data.summary.size() <= 240
+        && data.createdAt is timestamp && data.createdAt == request.time;
+    }
+
+    function isValidBusinessTemplate(t) {
+      return t in [
+        'concessionaria', 'supermercado', 'oficina', 'transportadora', 'restaurante',
+        'imobiliaria', 'seguranca', 'loja_roupas', 'posto_combustivel', 'entretenimento'
+      ];
+    }
+
+    function isValidBusinessLocation(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'templateType', 'name', 'category', 'description',
+          'acquisitionPrice', 'initialCapital', 'operatingExpense', 'maxEmployees',
+          'revenuePotential', 'minPriceMultiplier', 'maxPriceMultiplier',
+          'locationLabel', 'posX', 'posZ', 'available', 'isCatalogLocation',
+          'updatedBy', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'templateType', 'name', 'category', 'description',
+          'acquisitionPrice', 'initialCapital', 'operatingExpense', 'maxEmployees',
+          'revenuePotential', 'minPriceMultiplier', 'maxPriceMultiplier',
+          'locationLabel', 'posX', 'posZ', 'available', 'isCatalogLocation',
+          'updatedBy', 'updatedAt'
+        ])
+        && data.id is string && data.id.size() >= 2 && data.id.size() <= 64 && data.id == expectedId
+        && isValidBusinessTemplate(data.templateType)
+        && data.name is string && data.name.size() >= 3 && data.name.size() <= 64
+        && data.category is string && data.category.size() >= 2 && data.category.size() <= 48
+        && data.description is string && data.description.size() >= 6 && data.description.size() <= 240
+        && data.acquisitionPrice is number && data.acquisitionPrice >= 50 && data.acquisitionPrice <= 100000000
+        && data.initialCapital is number && data.initialCapital >= 0 && data.initialCapital <= 50000000
+        && data.operatingExpense is number && data.operatingExpense >= 0 && data.operatingExpense <= 10000000
+        && data.maxEmployees is number && data.maxEmployees >= 1 && data.maxEmployees <= 100
+        && data.revenuePotential is number && data.revenuePotential >= 10 && data.revenuePotential <= 100000000
+        && data.minPriceMultiplier is number && data.minPriceMultiplier >= 1.0 && data.minPriceMultiplier <= 5.0
+        && data.maxPriceMultiplier is number && data.maxPriceMultiplier >= data.minPriceMultiplier && data.maxPriceMultiplier <= 10.0
+        && data.locationLabel is string && data.locationLabel.size() >= 3 && data.locationLabel.size() <= 80
+        && data.posX is number && data.posX >= -40 && data.posX <= 40
+        && data.posZ is number && data.posZ >= -40 && data.posZ <= 40
+        && data.available is bool
+        && data.isCatalogLocation == true
+        && data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128 && data.updatedBy == request.auth.uid
+        && data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidBusinessRecord(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'locationId', 'templateType', 'name', 'category', 'description',
+          'ownerUid', 'ownerName', 'ownerAlias', 'status',
+          'acquisitionPrice', 'marketValue', 'operatingExpense', 'maxEmployees',
+          'growthLevel', 'employeeCount', 'reputation', 'reputationCount',
+          'forSale', 'salePrice', 'locationLabel', 'posX', 'posZ',
+          'lastTxId', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'locationId', 'templateType', 'name', 'category', 'description',
+          'ownerUid', 'ownerName', 'ownerAlias', 'status',
+          'acquisitionPrice', 'marketValue', 'operatingExpense', 'maxEmployees',
+          'growthLevel', 'employeeCount', 'reputation', 'reputationCount',
+          'forSale', 'salePrice', 'locationLabel', 'posX', 'posZ',
+          'lastTxId', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id.size() >= 3 && data.id.size() <= 128 && data.id == expectedId
+        && data.locationId is string && data.locationId.size() >= 2 && data.locationId.size() <= 64
+        && isValidBusinessTemplate(data.templateType)
+        && data.name is string && data.name.size() >= 3 && data.name.size() <= 64
+        && data.category is string && data.category.size() >= 2 && data.category.size() <= 48
+        && data.description is string && data.description.size() >= 6 && data.description.size() <= 240
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.ownerName is string && data.ownerName.size() >= 2 && data.ownerName.size() <= 64
+        && data.ownerAlias is string && data.ownerAlias.size() >= 2 && data.ownerAlias.size() <= 32
+        && data.status in ['active', 'inactive_funds', 'suspended']
+        && data.acquisitionPrice is number && data.acquisitionPrice >= 50 && data.acquisitionPrice <= 100000000
+        && data.marketValue is number && data.marketValue >= 50 && data.marketValue <= 500000000
+        && data.operatingExpense is number && data.operatingExpense >= 0 && data.operatingExpense <= 10000000
+        && data.maxEmployees is number && data.maxEmployees >= 1 && data.maxEmployees <= 100
+        && data.growthLevel is number && data.growthLevel >= 1 && data.growthLevel <= 10
+        && data.employeeCount is number && data.employeeCount >= 0 && data.employeeCount <= data.maxEmployees
+        && data.reputation is number && data.reputation >= 0 && data.reputation <= 100
+        && data.reputationCount is number && data.reputationCount >= 0 && data.reputationCount <= 1000000
+        && data.forSale is bool
+        && data.salePrice is number && data.salePrice >= 0 && data.salePrice <= 500000000
+        && data.locationLabel is string && data.locationLabel.size() >= 3 && data.locationLabel.size() <= 80
+        && data.posX is number && data.posX >= -40 && data.posX <= 40
+        && data.posZ is number && data.posZ >= -40 && data.posZ <= 40
+        && data.lastTxId is string && data.lastTxId.size() >= 1 && data.lastTxId.size() <= 128 && isValidId(data.lastTxId)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBusinessFinance(data, expectedBizId) {
+      return data.keys().hasAll([
+          'businessId', 'ownerUid', 'cashBalance', 'totalRevenue',
+          'totalExpenses', 'totalPayrollPaid', 'netProfit', 'lastTxId', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'businessId', 'ownerUid', 'cashBalance', 'totalRevenue',
+          'totalExpenses', 'totalPayrollPaid', 'netProfit', 'lastTxId', 'updatedAt'
+        ])
+        && data.businessId is string && data.businessId == expectedBizId
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.cashBalance is number && data.cashBalance >= 0 && data.cashBalance <= 1000000000
+        && data.totalRevenue is number && data.totalRevenue >= 0 && data.totalRevenue <= 10000000000
+        && data.totalExpenses is number && data.totalExpenses >= 0 && data.totalExpenses <= 10000000000
+        && data.totalPayrollPaid is number && data.totalPayrollPaid >= 0 && data.totalPayrollPaid <= 10000000000
+        && data.netProfit is number && data.netProfit >= -10000000000 && data.netProfit <= 10000000000
+        && data.lastTxId is string && data.lastTxId.size() >= 1 && data.lastTxId.size() <= 128 && isValidId(data.lastTxId)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBusinessVacancy(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'businessId', 'businessName', 'ownerUid', 'roleTitle', 'salary',
+          'schedule', 'requirements', 'slots', 'filledSlots', 'description',
+          'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'businessId', 'businessName', 'ownerUid', 'roleTitle', 'salary',
+          'schedule', 'requirements', 'slots', 'filledSlots', 'description',
+          'status', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == expectedId
+        && data.businessId is string && isValidId(data.businessId)
+        && data.businessName is string && data.businessName.size() >= 3 && data.businessName.size() <= 64
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.roleTitle is string && data.roleTitle.size() >= 2 && data.roleTitle.size() <= 48
+        && data.salary is number && data.salary >= 10 && data.salary <= 1000000
+        && data.schedule is string && data.schedule.size() >= 2 && data.schedule.size() <= 48
+        && data.requirements is string && data.requirements.size() >= 2 && data.requirements.size() <= 160
+        && data.slots is number && data.slots >= 1 && data.slots <= 50
+        && data.filledSlots is number && data.filledSlots >= 0 && data.filledSlots <= data.slots
+        && data.description is string && data.description.size() >= 4 && data.description.size() <= 240
+        && data.status in ['open', 'closed']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBusinessEmployee(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'businessId', 'businessName', 'ownerUid', 'employeeUid',
+          'employeeName', 'employeeAlias', 'vacancyId', 'roleTitle', 'salary',
+          'schedule', 'status', 'totalPaid', 'paymentsCount', 'hiredAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'businessId', 'businessName', 'ownerUid', 'employeeUid',
+          'employeeName', 'employeeAlias', 'vacancyId', 'roleTitle', 'salary',
+          'schedule', 'status', 'lastPayrollId', 'lastPaidAt', 'nextPaymentAt',
+          'totalPaid', 'paymentsCount', 'hiredAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == expectedId
+        && data.businessId is string && isValidId(data.businessId)
+        && data.businessName is string && data.businessName.size() >= 3 && data.businessName.size() <= 64
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.employeeUid is string && data.employeeUid.size() >= 1 && data.employeeUid.size() <= 128
+        && data.employeeUid != data.ownerUid
+        && data.employeeName is string && data.employeeName.size() >= 2 && data.employeeName.size() <= 64
+        && data.employeeAlias is string && data.employeeAlias.size() >= 2 && data.employeeAlias.size() <= 32
+        && data.vacancyId is string && data.vacancyId.size() >= 1 && data.vacancyId.size() <= 128
+        && data.roleTitle is string && data.roleTitle.size() >= 2 && data.roleTitle.size() <= 48
+        && data.salary is number && data.salary >= 10 && data.salary <= 1000000
+        && data.schedule is string && data.schedule.size() >= 2 && data.schedule.size() <= 48
+        && data.status in ['active', 'resigned', 'terminated']
+        && (!('lastPayrollId' in data) || (data.lastPayrollId is string && data.lastPayrollId.size() <= 128))
+        && (!('lastPaidAt' in data) || data.lastPaidAt is timestamp)
+        && (!('nextPaymentAt' in data) || data.nextPaymentAt is timestamp)
+        && data.totalPaid is number && data.totalPaid >= 0 && data.totalPaid <= 1000000000
+        && data.paymentsCount is number && data.paymentsCount >= 0 && data.paymentsCount <= 100000
+        && data.hiredAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBusinessApplication(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'businessId', 'businessName', 'ownerUid', 'vacancyId',
+          'applicantUid', 'applicantName', 'applicantAlias', 'roleTitle',
+          'offeredSalary', 'schedule', 'coverNote', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'businessId', 'businessName', 'ownerUid', 'vacancyId',
+          'applicantUid', 'applicantName', 'applicantAlias', 'roleTitle',
+          'offeredSalary', 'schedule', 'coverNote', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == expectedId
+        && data.businessId is string && isValidId(data.businessId)
+        && data.businessName is string && data.businessName.size() >= 3 && data.businessName.size() <= 64
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.vacancyId is string && data.vacancyId.size() >= 1 && data.vacancyId.size() <= 128
+        && data.applicantUid is string && data.applicantUid.size() >= 1 && data.applicantUid.size() <= 128
+        && data.applicantUid != data.ownerUid
+        && data.applicantName is string && data.applicantName.size() >= 2 && data.applicantName.size() <= 64
+        && data.applicantAlias is string && data.applicantAlias.size() >= 2 && data.applicantAlias.size() <= 32
+        && data.roleTitle is string && data.roleTitle.size() >= 2 && data.roleTitle.size() <= 48
+        && data.offeredSalary is number && data.offeredSalary >= 10 && data.offeredSalary <= 1000000
+        && data.schedule is string && data.schedule.size() >= 2 && data.schedule.size() <= 48
+        && data.coverNote is string && data.coverNote.size() >= 2 && data.coverNote.size() <= 200
+        && data.status in ['pending', 'offer_sent', 'hired', 'rejected', 'declined', 'withdrawn']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBusinessProduct(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'businessId', 'ownerUid', 'name', 'sku', 'category',
+          'unitCost', 'salePrice', 'minAllowedPrice', 'maxAllowedPrice',
+          'marginPercent', 'active', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'businessId', 'ownerUid', 'name', 'sku', 'category',
+          'unitCost', 'salePrice', 'minAllowedPrice', 'maxAllowedPrice',
+          'marginPercent', 'active', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == expectedId
+        && data.businessId is string && isValidId(data.businessId)
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 64
+        && data.sku is string && data.sku.size() >= 2 && data.sku.size() <= 24
+        && data.category is string && data.category.size() >= 2 && data.category.size() <= 40
+        && data.unitCost is number && data.unitCost >= 1 && data.unitCost <= 1000000
+        && data.minAllowedPrice is number && data.minAllowedPrice >= data.unitCost
+        && data.maxAllowedPrice is number && data.maxAllowedPrice >= data.minAllowedPrice
+        && data.salePrice is number && data.salePrice >= data.minAllowedPrice && data.salePrice <= data.maxAllowedPrice
+        && data.marginPercent is number && data.marginPercent >= 0 && data.marginPercent <= 1000
+        && data.active is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBusinessInventory(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'businessId', 'ownerUid', 'productName', 'quantity',
+          'unitCost', 'salePrice', 'lastMovementType', 'lastMovementQty', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'businessId', 'ownerUid', 'productName', 'quantity',
+          'unitCost', 'salePrice', 'lastMovementType', 'lastMovementQty', 'updatedAt'
+        ])
+        && data.id is string && data.id == expectedId
+        && data.businessId is string && isValidId(data.businessId)
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.productName is string && data.productName.size() >= 2 && data.productName.size() <= 64
+        && data.quantity is number && data.quantity >= 0 && data.quantity <= 1000000
+        && data.unitCost is number && data.unitCost >= 1 && data.unitCost <= 1000000
+        && data.salePrice is number && data.salePrice >= 1 && data.salePrice <= 10000000
+        && data.lastMovementType in ['init', 'restock', 'sale', 'adjustment']
+        && data.lastMovementQty is number && data.lastMovementQty >= 0 && data.lastMovementQty <= 1000000
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBusinessTransaction(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'operationId', 'businessId', 'ownerUid', 'actorUid',
+          'type', 'direction', 'amount', 'description',
+          'counterpartyUid', 'counterpartyLabel', 'status', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'operationId', 'businessId', 'ownerUid', 'actorUid',
+          'type', 'direction', 'amount', 'description',
+          'counterpartyUid', 'counterpartyLabel', 'status', 'createdAt'
+        ])
+        && data.id is string && data.id == expectedId
+        && data.operationId is string && data.operationId.size() >= 4 && data.operationId.size() <= 128 && isValidId(data.operationId)
+        && data.businessId is string && isValidId(data.businessId)
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.actorUid is string && data.actorUid == request.auth.uid
+        && data.type in [
+          'acquisition', 'p2p_sale', 'capital_inject', 'capital_withdraw',
+          'payroll', 'inventory_purchase', 'product_sale', 'operating_expense', 'admin_adjustment',
+          'vehicle_restock', 'vehicle_sale', 'vehicle_commission'
+        ]
+        && data.direction in ['in', 'out']
+        && data.amount is number && data.amount > 0 && data.amount <= 100000000
+        && data.description is string && data.description.size() >= 3 && data.description.size() <= 180
+        && data.counterpartyUid is string && data.counterpartyUid.size() >= 1 && data.counterpartyUid.size() <= 128
+        && data.counterpartyLabel is string && data.counterpartyLabel.size() >= 1 && data.counterpartyLabel.size() <= 64
+        && data.status == 'completed'
+        && data.createdAt is timestamp && data.createdAt == request.time;
+    }
+
+    function isValidBusinessPayroll(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'operationId', 'businessId', 'businessName', 'contractId',
+          'ownerUid', 'employeeUid', 'employeeName', 'roleTitle', 'amount',
+          'bankTxId', 'businessTxId', 'status', 'paidAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'operationId', 'businessId', 'businessName', 'contractId',
+          'ownerUid', 'employeeUid', 'employeeName', 'roleTitle', 'amount',
+          'bankTxId', 'businessTxId', 'status', 'paidAt'
+        ])
+        && data.id is string && data.id == expectedId
+        && data.operationId is string && data.operationId.size() >= 4 && data.operationId.size() <= 128 && isValidId(data.operationId)
+        && data.businessId is string && isValidId(data.businessId)
+        && data.businessName is string && data.businessName.size() >= 3 && data.businessName.size() <= 64
+        && data.contractId is string && isValidId(data.contractId)
+        && data.ownerUid is string && data.ownerUid == request.auth.uid
+        && data.employeeUid is string && data.employeeUid != request.auth.uid
+        && data.employeeName is string && data.employeeName.size() >= 2 && data.employeeName.size() <= 64
+        && data.roleTitle is string && data.roleTitle.size() >= 2 && data.roleTitle.size() <= 48
+        && data.amount is number && data.amount >= 10 && data.amount <= 1000000
+        && data.bankTxId is string && isValidId(data.bankTxId)
+        && data.businessTxId is string && isValidId(data.businessTxId)
+        && data.status == 'paid'
+        && data.paidAt is timestamp && data.paidAt == request.time;
+    }
+
+    function isValidBusinessReview(data, expectedId) {
+      return data.keys().hasAll(['id', 'businessId', 'authorUid', 'authorName', 'rating', 'comment', 'createdAt'])
+        && data.keys().hasOnly(['id', 'businessId', 'authorUid', 'authorName', 'rating', 'comment', 'createdAt'])
+        && data.id is string && data.id == expectedId
+        && data.businessId is string && isValidId(data.businessId)
+        && data.authorUid is string && data.authorUid == request.auth.uid
+        && data.authorName is string && data.authorName.size() >= 2 && data.authorName.size() <= 64
+        && data.rating is number && data.rating >= 1 && data.rating <= 5
+        && data.comment is string && data.comment.size() >= 3 && data.comment.size() <= 200
+        && data.createdAt is timestamp && data.createdAt == request.time;
+    }
+
+    function isValidVehicleCategory(c) {
+      return c in ['popular', 'sedan', 'suv', 'esportivo', 'luxo', 'picape', 'moto', 'caminhao'];
+    }
+
+    function isValidVehicleCatalogModel(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'manufacturer', 'model', 'year', 'category', 'basePrice', 'marketValue',
+          'topSpeed', 'acceleration', 'capacity', 'fuelConsumption', 'defaultCondition',
+          'imageKey', 'minPriceMultiplier', 'maxPriceMultiplier', 'maxCommissionPercent',
+          'description', 'active', 'isCatalogVehicle', 'updatedBy', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'manufacturer', 'model', 'year', 'category', 'basePrice', 'marketValue',
+          'topSpeed', 'acceleration', 'capacity', 'fuelConsumption', 'defaultCondition',
+          'imageKey', 'minPriceMultiplier', 'maxPriceMultiplier', 'maxCommissionPercent',
+          'description', 'active', 'isCatalogVehicle', 'updatedBy', 'updatedAt'
+        ])
+        && data.id is string && data.id.size() >= 2 && data.id.size() <= 64 && data.id == expectedId
+        && data.manufacturer is string && data.manufacturer.size() >= 2 && data.manufacturer.size() <= 48
+        && data.model is string && data.model.size() >= 2 && data.model.size() <= 64
+        && data.year is number && data.year >= 1980 && data.year <= 2035
+        && isValidVehicleCategory(data.category)
+        && data.basePrice is number && data.basePrice >= 20 && data.basePrice <= 100000000
+        && data.marketValue is number && data.marketValue >= 20 && data.marketValue <= 100000000
+        && data.topSpeed is number && data.topSpeed >= 40 && data.topSpeed <= 450
+        && data.acceleration is number && data.acceleration >= 1 && data.acceleration <= 10
+        && data.capacity is number && data.capacity >= 1 && data.capacity <= 16
+        && data.fuelConsumption is number && data.fuelConsumption >= 0.5 && data.fuelConsumption <= 60
+        && data.defaultCondition is number && data.defaultCondition >= 10 && data.defaultCondition <= 100
+        && isValidVehicleCategory(data.imageKey)
+        && data.minPriceMultiplier is number && data.minPriceMultiplier >= 0.8 && data.minPriceMultiplier <= 5.0
+        && data.maxPriceMultiplier is number && data.maxPriceMultiplier >= data.minPriceMultiplier && data.maxPriceMultiplier <= 10.0
+        && data.maxCommissionPercent is number && data.maxCommissionPercent >= 0 && data.maxCommissionPercent <= 35
+        && data.description is string && data.description.size() >= 4 && data.description.size() <= 240
+        && data.active is bool
+        && data.isCatalogVehicle == true
+        && data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128 && data.updatedBy == request.auth.uid
+        && data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidDealershipStock(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'businessId', 'businessName', 'ownerUid', 'ownerName', 'modelId',
+          'manufacturer', 'model', 'year', 'category', 'imageKey', 'purchaseCost',
+          'salePrice', 'promoDiscountPercent', 'finalPrice', 'topSpeed', 'acceleration',
+          'capacity', 'fuelConsumption', 'condition', 'commissionPercent',
+          'assignedSellerUid', 'assignedSellerName', 'status', 'lastTxId', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'businessId', 'businessName', 'ownerUid', 'ownerName', 'modelId',
+          'manufacturer', 'model', 'year', 'category', 'imageKey', 'purchaseCost',
+          'salePrice', 'promoDiscountPercent', 'finalPrice', 'topSpeed', 'acceleration',
+          'capacity', 'fuelConsumption', 'condition', 'commissionPercent',
+          'assignedSellerUid', 'assignedSellerName', 'status', 'soldToUid', 'soldVehicleId',
+          'lastTxId', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == expectedId
+        && data.businessId is string && isValidId(data.businessId)
+        && data.businessName is string && data.businessName.size() >= 3 && data.businessName.size() <= 64
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.ownerName is string && data.ownerName.size() >= 2 && data.ownerName.size() <= 64
+        && data.modelId is string && data.modelId.size() >= 2 && data.modelId.size() <= 64
+        && data.manufacturer is string && data.manufacturer.size() >= 2 && data.manufacturer.size() <= 48
+        && data.model is string && data.model.size() >= 2 && data.model.size() <= 64
+        && data.year is number && data.year >= 1980 && data.year <= 2035
+        && isValidVehicleCategory(data.category)
+        && isValidVehicleCategory(data.imageKey)
+        && data.purchaseCost is number && data.purchaseCost >= 20 && data.purchaseCost <= 100000000
+        && data.salePrice is number && data.salePrice >= 20 && data.salePrice <= 200000000
+        && data.promoDiscountPercent is number && data.promoDiscountPercent >= 0 && data.promoDiscountPercent <= 35
+        && data.finalPrice is number && data.finalPrice >= 15 && data.finalPrice <= 200000000
+        && data.topSpeed is number && data.topSpeed >= 40 && data.topSpeed <= 450
+        && data.acceleration is number && data.acceleration >= 1 && data.acceleration <= 10
+        && data.capacity is number && data.capacity >= 1 && data.capacity <= 16
+        && data.fuelConsumption is number && data.fuelConsumption >= 0.5 && data.fuelConsumption <= 60
+        && data.condition is number && data.condition >= 10 && data.condition <= 100
+        && data.commissionPercent is number && data.commissionPercent >= 0 && data.commissionPercent <= 35
+        && data.assignedSellerUid is string && data.assignedSellerUid.size() >= 1 && data.assignedSellerUid.size() <= 128
+        && data.assignedSellerName is string && data.assignedSellerName.size() >= 2 && data.assignedSellerName.size() <= 64
+        && data.status in ['available', 'sold', 'removed']
+        && (!('soldToUid' in data) || (data.soldToUid is string && data.soldToUid.size() <= 128))
+        && (!('soldVehicleId' in data) || (data.soldVehicleId is string && data.soldVehicleId.size() <= 128))
+        && data.lastTxId is string && data.lastTxId.size() >= 1 && data.lastTxId.size() <= 128 && isValidId(data.lastTxId)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPlayerVehicle(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'ownerUid', 'ownerName', 'ownerAlias', 'modelId', 'manufacturer', 'model',
+          'year', 'category', 'imageKey', 'plate', 'purchasePrice', 'marketValue',
+          'topSpeed', 'acceleration', 'capacity', 'fuelConsumption', 'condition', 'mileageKm',
+          'fuelLevel', 'status', 'activeListingId', 'originBusinessId', 'originBusinessName',
+          'lastTxId', 'parkedZone', 'parkedX', 'parkedZ', 'acquiredAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerUid', 'ownerName', 'ownerAlias', 'modelId', 'manufacturer', 'model',
+          'year', 'category', 'imageKey', 'plate', 'purchasePrice', 'marketValue',
+          'topSpeed', 'acceleration', 'capacity', 'fuelConsumption', 'condition', 'mileageKm',
+          'fuelLevel', 'status', 'activeListingId', 'originBusinessId', 'originBusinessName',
+          'lastTxId', 'parkedZone', 'parkedX', 'parkedZ', 'acquiredAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == expectedId
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.ownerName is string && data.ownerName.size() >= 2 && data.ownerName.size() <= 64
+        && data.ownerAlias is string && data.ownerAlias.size() >= 2 && data.ownerAlias.size() <= 32
+        && data.modelId is string && data.modelId.size() >= 2 && data.modelId.size() <= 64
+        && data.manufacturer is string && data.manufacturer.size() >= 2 && data.manufacturer.size() <= 48
+        && data.model is string && data.model.size() >= 2 && data.model.size() <= 64
+        && data.year is number && data.year >= 1980 && data.year <= 2035
+        && isValidVehicleCategory(data.category)
+        && isValidVehicleCategory(data.imageKey)
+        && data.plate is string && data.plate.size() >= 4 && data.plate.size() <= 16
+        && data.purchasePrice is number && data.purchasePrice >= 15 && data.purchasePrice <= 200000000
+        && data.marketValue is number && data.marketValue >= 15 && data.marketValue <= 200000000
+        && data.topSpeed is number && data.topSpeed >= 40 && data.topSpeed <= 450
+        && data.acceleration is number && data.acceleration >= 1 && data.acceleration <= 10
+        && data.capacity is number && data.capacity >= 1 && data.capacity <= 16
+        && data.fuelConsumption is number && data.fuelConsumption >= 0.5 && data.fuelConsumption <= 60
+        && data.condition is number && data.condition >= 0 && data.condition <= 100
+        && data.mileageKm is number && data.mileageKm >= 0 && data.mileageKm <= 5000000
+        && data.fuelLevel is number && data.fuelLevel >= 0 && data.fuelLevel <= 100
+        && data.status in ['in_garage', 'listed', 'parked']
+        && data.activeListingId is string && data.activeListingId.size() >= 1 && data.activeListingId.size() <= 128
+        && data.originBusinessId is string && data.originBusinessId.size() >= 1 && data.originBusinessId.size() <= 128
+        && data.originBusinessName is string && data.originBusinessName.size() >= 2 && data.originBusinessName.size() <= 64
+        && data.lastTxId is string && data.lastTxId.size() >= 1 && data.lastTxId.size() <= 128 && isValidId(data.lastTxId)
+        && data.parkedZone is string && data.parkedZone.size() >= 2 && data.parkedZone.size() <= 64
+        && data.parkedX is number && data.parkedX >= -40 && data.parkedX <= 40
+        && data.parkedZ is number && data.parkedZ >= -40 && data.parkedZ <= 40
+        && data.acquiredAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidVehicleTransaction(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'operationId', 'type', 'vehicleId', 'modelId', 'vehicleLabel',
+          'businessId', 'fromUid', 'fromLabel', 'toUid', 'toLabel', 'actorUid',
+          'participants', 'amount', 'description', 'status', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'operationId', 'type', 'vehicleId', 'modelId', 'vehicleLabel',
+          'businessId', 'fromUid', 'fromLabel', 'toUid', 'toLabel', 'actorUid',
+          'participants', 'amount', 'description', 'status', 'createdAt'
+        ])
+        && data.id is string && data.id == expectedId
+        && data.operationId is string && data.operationId.size() >= 4 && data.operationId.size() <= 128 && isValidId(data.operationId)
+        && data.type in ['dealership_restock', 'dealership_sale', 'p2p_sale', 'maintenance', 'commission_paid']
+        && data.vehicleId is string && data.vehicleId.size() >= 2 && data.vehicleId.size() <= 128
+        && data.modelId is string && data.modelId.size() >= 2 && data.modelId.size() <= 64
+        && data.vehicleLabel is string && data.vehicleLabel.size() >= 2 && data.vehicleLabel.size() <= 80
+        && data.businessId is string && data.businessId.size() >= 1 && data.businessId.size() <= 128
+        && data.fromUid is string && data.fromUid.size() >= 1 && data.fromUid.size() <= 128
+        && data.fromLabel is string && data.fromLabel.size() >= 1 && data.fromLabel.size() <= 64
+        && data.toUid is string && data.toUid.size() >= 1 && data.toUid.size() <= 128
+        && data.toLabel is string && data.toLabel.size() >= 1 && data.toLabel.size() <= 64
+        && data.actorUid is string && data.actorUid == request.auth.uid
+        && data.participants is list && data.participants.size() >= 1 && data.participants.size() <= 2
+        && data.participants[0] is string && data.participants[0].size() <= 128
+        && (data.participants.size() == 1 || (data.participants[1] is string && data.participants[1].size() <= 128))
+        && data.amount is number && data.amount > 0 && data.amount <= 200000000
+        && data.description is string && data.description.size() >= 3 && data.description.size() <= 180
+        && data.status == 'completed'
+        && data.createdAt is timestamp && data.createdAt == request.time;
+    }
+
+    function isValidVehicleListing(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'vehicleId', 'sellerUid', 'sellerName', 'sellerAlias', 'modelId',
+          'manufacturer', 'model', 'year', 'category', 'imageKey', 'plate',
+          'condition', 'mileageKm', 'fuelLevel', 'topSpeed', 'acceleration', 'capacity',
+          'marketValue', 'askingPrice', 'description', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'vehicleId', 'sellerUid', 'sellerName', 'sellerAlias', 'modelId',
+          'manufacturer', 'model', 'year', 'category', 'imageKey', 'plate',
+          'condition', 'mileageKm', 'fuelLevel', 'topSpeed', 'acceleration', 'capacity',
+          'marketValue', 'askingPrice', 'description', 'status', 'buyerUid', 'soldTxId',
+          'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == expectedId
+        && data.vehicleId is string && isValidId(data.vehicleId)
+        && data.sellerUid is string && data.sellerUid.size() >= 1 && data.sellerUid.size() <= 128
+        && data.sellerName is string && data.sellerName.size() >= 2 && data.sellerName.size() <= 64
+        && data.sellerAlias is string && data.sellerAlias.size() >= 2 && data.sellerAlias.size() <= 32
+        && data.modelId is string && data.modelId.size() >= 2 && data.modelId.size() <= 64
+        && data.manufacturer is string && data.manufacturer.size() >= 2 && data.manufacturer.size() <= 48
+        && data.model is string && data.model.size() >= 2 && data.model.size() <= 64
+        && data.year is number && data.year >= 1980 && data.year <= 2035
+        && isValidVehicleCategory(data.category)
+        && isValidVehicleCategory(data.imageKey)
+        && data.plate is string && data.plate.size() >= 4 && data.plate.size() <= 16
+        && data.condition is number && data.condition >= 0 && data.condition <= 100
+        && data.mileageKm is number && data.mileageKm >= 0 && data.mileageKm <= 5000000
+        && data.fuelLevel is number && data.fuelLevel >= 0 && data.fuelLevel <= 100
+        && data.topSpeed is number && data.topSpeed >= 40 && data.topSpeed <= 450
+        && data.acceleration is number && data.acceleration >= 1 && data.acceleration <= 10
+        && data.capacity is number && data.capacity >= 1 && data.capacity <= 16
+        && data.marketValue is number && data.marketValue >= 15 && data.marketValue <= 200000000
+        && data.askingPrice is number && data.askingPrice >= 15 && data.askingPrice <= 200000000
+        && data.description is string && data.description.size() >= 3 && data.description.size() <= 200
+        && data.status in ['active', 'sold', 'cancelled', 'suspended']
+        && (!('buyerUid' in data) || (data.buyerUid is string && data.buyerUid.size() <= 128))
+        && (!('soldTxId' in data) || (data.soldTxId is string && data.soldTxId.size() <= 128))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidVehicleOffer(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'listingId', 'vehicleId', 'vehicleLabel', 'sellerUid', 'sellerName',
+          'buyerUid', 'buyerName', 'buyerAlias', 'askingPrice', 'offerPrice',
+          'message', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'listingId', 'vehicleId', 'vehicleLabel', 'sellerUid', 'sellerName',
+          'buyerUid', 'buyerName', 'buyerAlias', 'askingPrice', 'offerPrice',
+          'message', 'status', 'completedTxId', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == expectedId
+        && data.listingId is string && isValidId(data.listingId)
+        && data.vehicleId is string && isValidId(data.vehicleId)
+        && data.vehicleLabel is string && data.vehicleLabel.size() >= 2 && data.vehicleLabel.size() <= 80
+        && data.sellerUid is string && data.sellerUid.size() >= 1 && data.sellerUid.size() <= 128
+        && data.sellerName is string && data.sellerName.size() >= 2 && data.sellerName.size() <= 64
+        && data.buyerUid is string && data.buyerUid.size() >= 1 && data.buyerUid.size() <= 128
+        && data.buyerUid != data.sellerUid
+        && data.buyerName is string && data.buyerName.size() >= 2 && data.buyerName.size() <= 64
+        && data.buyerAlias is string && data.buyerAlias.size() >= 2 && data.buyerAlias.size() <= 32
+        && data.askingPrice is number && data.askingPrice >= 15 && data.askingPrice <= 200000000
+        && data.offerPrice is number && data.offerPrice >= 15 && data.offerPrice <= 200000000
+        && data.message is string && data.message.size() >= 2 && data.message.size() <= 180
+        && data.status in ['pending', 'accepted', 'rejected', 'withdrawn', 'completed']
+        && (!('completedTxId' in data) || (data.completedTxId is string && data.completedTxId.size() <= 128))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidVehicleMaintenance(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'operationId', 'vehicleId', 'ownerUid', 'serviceType', 'cost',
+          'conditionBefore', 'conditionAfter', 'fuelBefore', 'fuelAfter',
+          'bankTxId', 'description', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'operationId', 'vehicleId', 'ownerUid', 'serviceType', 'cost',
+          'conditionBefore', 'conditionAfter', 'fuelBefore', 'fuelAfter',
+          'bankTxId', 'description', 'createdAt'
+        ])
+        && data.id is string && data.id == expectedId
+        && data.operationId is string && data.operationId.size() >= 4 && data.operationId.size() <= 128 && isValidId(data.operationId)
+        && data.vehicleId is string && isValidId(data.vehicleId)
+        && data.ownerUid is string && data.ownerUid == request.auth.uid
+        && data.serviceType in ['fuel', 'repair', 'revision']
+        && data.cost is number && data.cost >= 1 && data.cost <= 100000
+        && data.conditionBefore is number && data.conditionBefore >= 0 && data.conditionBefore <= 100
+        && data.conditionAfter is number && data.conditionAfter >= 0 && data.conditionAfter <= 100
+        && data.fuelBefore is number && data.fuelBefore >= 0 && data.fuelBefore <= 100
+        && data.fuelAfter is number && data.fuelAfter >= 0 && data.fuelAfter <= 100
+        && data.bankTxId is string && isValidId(data.bankTxId)
+        && data.description is string && data.description.size() >= 3 && data.description.size() <= 180
+        && data.createdAt is timestamp && data.createdAt == request.time;
+    }
+
+    function isValidVehicleCommission(data, expectedId) {
+      return data.keys().hasAll([
+          'id', 'businessId', 'businessName', 'ownerUid', 'sellerUid', 'sellerName',
+          'stockId', 'vehicleId', 'vehicleLabel', 'salePrice', 'commissionPercent',
+          'commissionAmount', 'status', 'saleTxId', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'businessId', 'businessName', 'ownerUid', 'sellerUid', 'sellerName',
+          'stockId', 'vehicleId', 'vehicleLabel', 'salePrice', 'commissionPercent',
+          'commissionAmount', 'status', 'saleTxId', 'payoutTxId', 'createdAt', 'paidAt'
+        ])
+        && data.id is string && data.id == expectedId
+        && data.businessId is string && isValidId(data.businessId)
+        && data.businessName is string && data.businessName.size() >= 3 && data.businessName.size() <= 64
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.sellerUid is string && data.sellerUid.size() >= 1 && data.sellerUid.size() <= 128
+        && data.sellerUid != data.ownerUid
+        && data.sellerName is string && data.sellerName.size() >= 2 && data.sellerName.size() <= 64
+        && data.stockId is string && isValidId(data.stockId)
+        && data.vehicleId is string && isValidId(data.vehicleId)
+        && data.vehicleLabel is string && data.vehicleLabel.size() >= 2 && data.vehicleLabel.size() <= 80
+        && data.salePrice is number && data.salePrice >= 15 && data.salePrice <= 200000000
+        && data.commissionPercent is number && data.commissionPercent > 0 && data.commissionPercent <= 35
+        && data.commissionAmount is number && data.commissionAmount > 0 && data.commissionAmount <= 50000000
+        && data.status in ['pending', 'paid', 'cancelled']
+        && data.saleTxId is string && isValidId(data.saleTxId)
+        && (!('payoutTxId' in data) || (data.payoutTxId is string && data.payoutTxId.size() <= 128))
+        && data.createdAt is timestamp
+        && (!('paidAt' in data) || data.paidAt is timestamp);
+    }
+
+    // 4. Collection Rules
+
+    // Character Profiles
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if isSignedIn() && (resource.data.uid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && request.auth.uid == userId
+        && isValidCharacterProfile(incoming(), userId)
+        && incoming().keys().hasAll(['experience', 'lastX', 'lastZ', 'lastRotY'])
+        && incoming().level == 1
+        && incoming().experience == 0
+        && incoming().reputation == 0
+        && incoming().cashBalance == initialCleanCashTarget()
+        && incoming().bankBalance == initialBankBalanceTarget()
+        && incoming().status == 'active'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidCharacterProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+          ||
+          (
+            request.auth.uid == userId
+            && existing().status == 'active'
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'coatColor', 'accentColor', 'skinTone', 'style', 'district',
+              'lastX', 'lastZ', 'lastRotY', 'updatedAt'
+            ])
+            && incoming().cashBalance == existing().cashBalance
+            && incoming().bankBalance == existing().bankBalance
+            && incoming().level == existing().level
+            && (!('experience' in existing()) || incoming().experience == existing().experience)
+            && incoming().reputation == existing().reputation
+            && incoming().status == existing().status
+          )
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(userId) && isAdmin();
+
+      match /private/{docId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(docId) && (request.auth.uid == userId || isAdmin());
+        allow list: if isSignedIn() && (resource.data.uid == request.auth.uid || isBootstrappedAdmin());
+
+        allow create: if isVerifiedUser()
+          && isValidId(userId)
+          && isValidId(docId)
+          && docId == 'account'
+          && request.auth.uid == userId
+          && isValidPrivateAccount(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().lastLoginAt == request.time;
+
+        allow update: if isVerifiedUser()
+          && isValidId(userId)
+          && isValidId(docId)
+          && docId == 'account'
+          && isValidPrivateAccount(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().lastLoginAt == request.time
+          && (
+            isAdmin()
+            || (
+              request.auth.uid == userId
+              && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'provider', 'lastLoginAt'])
+            )
+          );
+
+        allow delete: if false;
+      }
+    }
+
+    // Individual Wallets (Strictly private reads; mathematically guarded atomic balance changes only!)
+    match /wallets/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if isSignedIn() && (resource.data.uid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && request.auth.uid == userId
+        && isValidWallet(incoming(), userId)
+        && incoming().cleanCash == initialCleanCashTarget()
+        && incoming().dirtyCash == 0
+        && incoming().companiesValue == 0
+        && incoming().realEstateValue == 0
+        && incoming().vehiclesValue == 0
+        && incoming().investmentsValue == 0
+        && incoming().otherAssetsValue == 0
+        && incoming().lastTxId == 'init'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidWallet(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().lastTxId != existing().lastTxId
+        && !exists(/databases/$(database)/documents/transactions/$(incoming().lastTxId))
+        && existsAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId))
+        && (
+          // Action 1: Audited Admin Adjustment
+          (
+            isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly(['cleanCash', 'dirtyCash', 'lastTxId', 'updatedAt'])
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type == 'admin_adjustment'
+          )
+          ||
+          // Action 2: Citizen Deposit (Clean cash strictly decreases by exact amount added to bank_accounts)
+          (
+            request.auth.uid == userId
+            && incoming().diff(existing()).affectedKeys().hasOnly(['cleanCash', 'lastTxId', 'updatedAt'])
+            && incoming().dirtyCash == existing().dirtyCash
+            && incoming().cleanCash < existing().cleanCash
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type == 'deposit'
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.fromUid == userId
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.toUid == userId
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.amount,
+              existing().cleanCash - incoming().cleanCash
+            )
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/bank_accounts/$(userId)).data.balance,
+              get(/databases/$(database)/documents/bank_accounts/$(userId)).data.balance + (existing().cleanCash - incoming().cleanCash)
+            )
+          )
+          ||
+          // Action 3: Citizen Withdraw (Clean cash strictly increases by exact amount subtracted from bank_accounts)
+          (
+            request.auth.uid == userId
+            && incoming().diff(existing()).affectedKeys().hasOnly(['cleanCash', 'lastTxId', 'updatedAt'])
+            && incoming().dirtyCash == existing().dirtyCash
+            && incoming().cleanCash > existing().cleanCash
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type == 'withdraw'
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.fromUid == userId
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.toUid == userId
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.amount,
+              incoming().cleanCash - existing().cleanCash
+            )
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/bank_accounts/$(userId)).data.balance,
+              get(/databases/$(database)/documents/bank_accounts/$(userId)).data.balance - (incoming().cleanCash - existing().cleanCash)
+            )
+          )
+          ||
+          // Action 4: Business Equity Patrimony Update (Coupled to verified business_purchase / business_sale tx)
+          (
+            request.auth.uid == userId
+            && incoming().diff(existing()).affectedKeys().hasOnly(['companiesValue', 'lastTxId', 'updatedAt'])
+            && incoming().cleanCash == existing().cleanCash
+            && incoming().dirtyCash == existing().dirtyCash
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type in ['business_purchase', 'business_sale']
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.fromUid == userId
+          )
+          ||
+          // Action 5: Vehicle Patrimony Update (Coupled to verified vehicle_purchase / vehicle_p2p_sale tx)
+          (
+            request.auth.uid == userId
+            && incoming().diff(existing()).affectedKeys().hasOnly(['vehiclesValue', 'lastTxId', 'updatedAt'])
+            && incoming().cleanCash == existing().cleanCash
+            && incoming().dirtyCash == existing().dirtyCash
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type in ['vehicle_purchase', 'vehicle_p2p_sale']
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.fromUid == userId
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // Legal Bank Accounts (Private reads; atomic deposit, withdraw, P2P transfer, salary, or admin audit)
+    match /bank_accounts/{accountUid} {
+      allow get: if isSignedIn() && isValidId(accountUid) && (request.auth.uid == accountUid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.uid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser()
+        && isValidId(accountUid)
+        && request.auth.uid == accountUid
+        && isValidBankAccount(incoming(), accountUid)
+        && incoming().balance == initialBankBalanceTarget()
+        && incoming().status == 'active'
+        && incoming().lastTxId == 'init'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(accountUid)
+        && isValidBankAccount(incoming(), accountUid)
+        && incoming().uid == existing().uid
+        && incoming().accountNumber == existing().accountNumber
+        && incoming().bankName == existing().bankName
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().lastTxId != existing().lastTxId
+        && !exists(/databases/$(database)/documents/transactions/$(incoming().lastTxId))
+        && (
+          // Action 1: Verified Legal Salary Payout (Coupled atomically with brand-new salary transaction -> salary_payments/{sessionId} -> completed work_session)
+          (
+            request.auth.uid == accountUid
+            && existing().status == 'active'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['balance', 'lastTxId', 'updatedAt'])
+            && incoming().balance > existing().balance
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type == 'salary'
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.toUid == accountUid
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.amount,
+              incoming().balance - existing().balance
+            )
+          )
+          ||
+          // Action 2: Owner Deposit (Exact conservation with wallets/{uid}.cleanCash)
+          (
+            request.auth.uid == accountUid
+            && existing().status == 'active'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['balance', 'lastTxId', 'updatedAt'])
+            && incoming().balance > existing().balance
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type == 'deposit'
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.amount,
+              incoming().balance - existing().balance
+            )
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/wallets/$(accountUid)).data.cleanCash,
+              get(/databases/$(database)/documents/wallets/$(accountUid)).data.cleanCash - (incoming().balance - existing().balance)
+            )
+          )
+          ||
+          // Action 3: Owner Withdraw (Exact conservation with wallets/{uid}.cleanCash)
+          (
+            request.auth.uid == accountUid
+            && existing().status == 'active'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['balance', 'lastTxId', 'updatedAt'])
+            && incoming().balance < existing().balance
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type == 'withdraw'
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.amount,
+              existing().balance - incoming().balance
+            )
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/wallets/$(accountUid)).data.cleanCash,
+              get(/databases/$(database)/documents/wallets/$(accountUid)).data.cleanCash + (existing().balance - incoming().balance)
+            )
+          )
+          ||
+          // Action 4: Outgoing P2P Transfer (Sender debited by exact amount credited to recipient)
+          (
+            request.auth.uid == accountUid
+            && existing().status == 'active'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['balance', 'lastTxId', 'updatedAt'])
+            && incoming().balance < existing().balance
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type == 'transfer'
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.fromUid == accountUid
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.toUid != accountUid
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.amount,
+              existing().balance - incoming().balance
+            )
+            && getAfter(/databases/$(database)/documents/bank_accounts/$(getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.toUid)).data.lastTxId
+              == incoming().lastTxId
+          )
+          ||
+          // Action 5: Incoming P2P Transfer Credit (Recipient credited ONLY when sender debited exact amount atomically)
+          (
+            request.auth.uid != accountUid
+            && existing().status == 'active'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['balance', 'lastTxId', 'updatedAt'])
+            && incoming().balance > existing().balance
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type == 'transfer'
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.fromUid == request.auth.uid
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.toUid == accountUid
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.amount,
+              incoming().balance - existing().balance
+            )
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/bank_accounts/$(request.auth.uid)).data.balance,
+              get(/databases/$(database)/documents/bank_accounts/$(request.auth.uid)).data.balance - (incoming().balance - existing().balance)
+            )
+          )
+          ||
+          // Action 6: Business or Vehicle Bank Debit (Acquisition, P2P Purchase, Capital Injection, Maintenance)
+          (
+            request.auth.uid == accountUid
+            && existing().status == 'active'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['balance', 'lastTxId', 'updatedAt'])
+            && incoming().balance < existing().balance
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type in [
+              'business_purchase', 'business_sale', 'business_capital',
+              'vehicle_purchase', 'vehicle_p2p_sale', 'vehicle_maintenance'
+            ]
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.fromUid == accountUid
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.amount,
+              existing().balance - incoming().balance
+            )
+          )
+          ||
+          // Action 7: P2P Business or Used Vehicle Sale Seller Credit (Atomic exact match with buyer debit)
+          (
+            request.auth.uid != accountUid
+            && existing().status == 'active'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['balance', 'lastTxId', 'updatedAt'])
+            && incoming().balance > existing().balance
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type in ['business_sale', 'vehicle_p2p_sale']
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.fromUid == request.auth.uid
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.toUid == accountUid
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.amount,
+              incoming().balance - existing().balance
+            )
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/bank_accounts/$(request.auth.uid)).data.balance,
+              get(/databases/$(database)/documents/bank_accounts/$(request.auth.uid)).data.balance - (incoming().balance - existing().balance)
+            )
+          )
+          ||
+          // Action 8: Business Payroll, Vehicle Commission Credit to Employee OR Owner Profit Withdrawal from Business Cash
+          (
+            existing().status == 'active'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['balance', 'lastTxId', 'updatedAt'])
+            && incoming().balance > existing().balance
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type in ['business_payroll', 'business_capital', 'vehicle_commission']
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.toUid == accountUid
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.amount,
+              incoming().balance - existing().balance
+            )
+          )
+          ||
+          // Action 9: Audited Admin Adjustment or Freeze
+          (
+            isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly(['balance', 'status', 'lastTxId', 'updatedAt'])
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type == 'admin_adjustment'
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // Public Non-PII Bank Directory (Allows finding transfer recipients without exposing balances or email)
+    match /bank_directory/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if isSignedIn() && resource.data.active == true;
+
+      allow create, update: if isVerifiedUser()
+        && isValidId(userId)
+        && request.auth.uid == userId
+        && isValidBankDirectory(incoming(), userId);
+
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    // Immutable Financial Ledger (Readable only by involved participants or Admin; never editable/deletable)
+    match /transactions/{txId} {
+      allow get: if isSignedIn() && isValidId(txId)
+        && (resource == null || request.auth.uid in existing().participants || isAdmin());
+      allow list: if isSignedIn()
+        && (request.auth.uid in resource.data.participants || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser()
+        && isValidId(txId)
+        && isValidTransaction(incoming(), txId)
+        && (
+          (
+            incoming().type in ['deposit', 'withdraw', 'transfer', 'business_purchase']
+            && incoming().fromUid == request.auth.uid
+            && request.auth.uid in incoming().participants
+          )
+          || (
+            incoming().type == 'business_sale'
+            && incoming().fromUid == request.auth.uid
+            && request.auth.uid in incoming().participants
+            && get(/databases/$(database)/documents/businesses/$(incoming().operationId)).data.forSale == true
+            && get(/databases/$(database)/documents/businesses/$(incoming().operationId)).data.ownerUid == incoming().toUid
+            && approxEqual(incoming().amount, get(/databases/$(database)/documents/businesses/$(incoming().operationId)).data.salePrice)
+          )
+          || (
+            incoming().type == 'business_capital'
+            && request.auth.uid in incoming().participants
+            && get(/databases/$(database)/documents/businesses/$(incoming().operationId)).data.ownerUid == request.auth.uid
+            && (
+              incoming().fromUid == request.auth.uid
+              || (
+                incoming().toUid == request.auth.uid
+                && approxEqual(
+                  get(/databases/$(database)/documents/business_finances/$(incoming().operationId)).data.cashBalance - incoming().amount,
+                  getAfter(/databases/$(database)/documents/business_finances/$(incoming().operationId)).data.cashBalance
+                )
+              )
+            )
+          )
+          || (
+            incoming().type == 'business_payroll'
+            && incoming().actorUid == request.auth.uid
+            && !exists(/databases/$(database)/documents/business_payroll/$(incoming().operationId))
+            && getAfter(/databases/$(database)/documents/business_payroll/$(incoming().operationId)).data.ownerUid == request.auth.uid
+            && getAfter(/databases/$(database)/documents/business_payroll/$(incoming().operationId)).data.employeeUid == incoming().toUid
+            && getAfter(/databases/$(database)/documents/business_payroll/$(incoming().operationId)).data.bankTxId == txId
+            && approxEqual(
+              incoming().amount,
+              getAfter(/databases/$(database)/documents/business_payroll/$(incoming().operationId)).data.amount
+            )
+          )
+          || (
+            incoming().type == 'salary'
+            && incoming().toUid == request.auth.uid
+            && request.auth.uid in incoming().participants
+            && !exists(/databases/$(database)/documents/salary_payments/$(incoming().operationId))
+            && getAfter(/databases/$(database)/documents/salary_payments/$(incoming().operationId)).data.uid == request.auth.uid
+            && getAfter(/databases/$(database)/documents/salary_payments/$(incoming().operationId)).data.txId == txId
+            && approxEqual(
+              incoming().amount,
+              getAfter(/databases/$(database)/documents/salary_payments/$(incoming().operationId)).data.amount
+            )
+          )
+          || (
+            incoming().type == 'vehicle_purchase'
+            && incoming().fromUid == request.auth.uid
+            && request.auth.uid in incoming().participants
+            && get(/databases/$(database)/documents/dealership_inventory/$(incoming().operationId)).data.status == 'available'
+            && get(/databases/$(database)/documents/dealership_inventory/$(incoming().operationId)).data.ownerUid != request.auth.uid
+            && getAfter(/databases/$(database)/documents/dealership_inventory/$(incoming().operationId)).data.status == 'sold'
+            && approxEqual(
+              incoming().amount,
+              get(/databases/$(database)/documents/dealership_inventory/$(incoming().operationId)).data.finalPrice
+            )
+          )
+          || (
+            incoming().type == 'vehicle_p2p_sale'
+            && incoming().fromUid == request.auth.uid
+            && request.auth.uid in incoming().participants
+            && (
+              (
+                exists(/databases/$(database)/documents/vehicle_listings/$(incoming().operationId))
+                && get(/databases/$(database)/documents/vehicle_listings/$(incoming().operationId)).data.status == 'active'
+                && get(/databases/$(database)/documents/vehicle_listings/$(incoming().operationId)).data.sellerUid == incoming().toUid
+                && getAfter(/databases/$(database)/documents/vehicle_listings/$(incoming().operationId)).data.status == 'sold'
+                && approxEqual(
+                  incoming().amount,
+                  get(/databases/$(database)/documents/vehicle_listings/$(incoming().operationId)).data.askingPrice
+                )
+              )
+              || (
+                exists(/databases/$(database)/documents/vehicle_offers/$(incoming().operationId))
+                && get(/databases/$(database)/documents/vehicle_offers/$(incoming().operationId)).data.status == 'accepted'
+                && get(/databases/$(database)/documents/vehicle_offers/$(incoming().operationId)).data.buyerUid == request.auth.uid
+                && get(/databases/$(database)/documents/vehicle_offers/$(incoming().operationId)).data.sellerUid == incoming().toUid
+                && getAfter(/databases/$(database)/documents/vehicle_offers/$(incoming().operationId)).data.status == 'completed'
+                && approxEqual(
+                  incoming().amount,
+                  get(/databases/$(database)/documents/vehicle_offers/$(incoming().operationId)).data.offerPrice
+                )
+              )
+            )
+          )
+          || (
+            incoming().type == 'vehicle_maintenance'
+            && incoming().fromUid == request.auth.uid
+            && request.auth.uid in incoming().participants
+            && get(/databases/$(database)/documents/vehicles/$(incoming().operationId)).data.ownerUid == request.auth.uid
+          )
+          || (
+            incoming().type == 'vehicle_commission'
+            && incoming().actorUid == request.auth.uid
+            && get(/databases/$(database)/documents/vehicle_commissions/$(incoming().operationId)).data.ownerUid == request.auth.uid
+            && get(/databases/$(database)/documents/vehicle_commissions/$(incoming().operationId)).data.status == 'pending'
+            && get(/databases/$(database)/documents/vehicle_commissions/$(incoming().operationId)).data.sellerUid == incoming().toUid
+            && getAfter(/databases/$(database)/documents/vehicle_commissions/$(incoming().operationId)).data.status == 'paid'
+            && getAfter(/databases/$(database)/documents/vehicle_commissions/$(incoming().operationId)).data.payoutTxId == txId
+            && approxEqual(
+              incoming().amount,
+              get(/databases/$(database)/documents/vehicle_commissions/$(incoming().operationId)).data.commissionAmount
+            )
+          )
+          || (incoming().type == 'admin_adjustment' && isAdmin())
+        );
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Legal Jobs Catalog (Readable by signed-in citizens, writable ONLY by Admin)
+    match /jobs/{jobId} {
+      allow get: if isSignedIn() && isValidId(jobId);
+      allow list: if isSignedIn() && resource.data.isCatalogJob == true;
+
+      allow create, update: if isVerifiedUser()
+        && isValidId(jobId)
+        && isValidJobDefinition(incoming(), jobId)
+        && isAdmin();
+
+      allow delete: if false;
+    }
+
+    // Server-Timed Work Sessions (Terminal State Locked + Server Clock Duration Enforced!)
+    match /work_sessions/{sessionId} {
+      allow get: if isSignedIn() && isValidId(sessionId)
+        && (resource == null || existing().uid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.uid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser()
+        && isValidId(sessionId)
+        && isValidWorkSession(incoming(), sessionId)
+        && incoming().uid == request.auth.uid
+        && incoming().status == 'in_progress'
+        && incoming().startedAt == request.time
+        && (!('completedAt' in incoming()))
+        && (!('payoutTxId' in incoming()))
+        && (
+          !exists(/databases/$(database)/documents/jobs/$(incoming().jobId))
+          || (
+            get(/databases/$(database)/documents/jobs/$(incoming().jobId)).data.available == true
+            && incoming().durationSeconds == get(/databases/$(database)/documents/jobs/$(incoming().jobId)).data.durationSeconds
+            && incoming().expectedSalary <= get(/databases/$(database)/documents/jobs/$(incoming().jobId)).data.baseSalary * 2
+          )
+        );
+
+      allow update: if isVerifiedUser()
+        && isValidId(sessionId)
+        && isValidWorkSession(incoming(), sessionId)
+        && existing().uid == request.auth.uid
+        && incoming().uid == existing().uid
+        && incoming().id == existing().id
+        && incoming().jobId == existing().jobId
+        && incoming().startedAt == existing().startedAt
+        && incoming().durationSeconds == existing().durationSeconds
+        && incoming().expectedSalary == existing().expectedSalary
+        && incoming().xpReward == existing().xpReward
+        && existing().status == 'in_progress'
+        && (
+          (
+            incoming().status == 'completed'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'completedAt', 'payoutTxId'])
+            && incoming().completedAt == request.time
+            && request.time >= existing().startedAt + duration.value(existing().durationSeconds, 's')
+            && existsAfter(/databases/$(database)/documents/salary_payments/$(sessionId))
+          )
+          ||
+          (
+            incoming().status == 'cancelled'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'completedAt'])
+            && incoming().completedAt == request.time
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // Immutable Salary Payments (Keyed by sessionId — mathematically impossible to pay twice!)
+    match /salary_payments/{sessionId} {
+      allow get: if isSignedIn() && isValidId(sessionId)
+        && (resource == null || existing().uid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.uid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser()
+        && isValidId(sessionId)
+        && isValidSalaryPayment(incoming(), sessionId)
+        && get(/databases/$(database)/documents/work_sessions/$(sessionId)).data.uid == request.auth.uid
+        && get(/databases/$(database)/documents/work_sessions/$(sessionId)).data.status == 'in_progress'
+        && getAfter(/databases/$(database)/documents/work_sessions/$(sessionId)).data.status == 'completed'
+        && incoming().amount <= get(/databases/$(database)/documents/work_sessions/$(sessionId)).data.expectedSalary
+        && incoming().xpAwarded == get(/databases/$(database)/documents/work_sessions/$(sessionId)).data.xpReward;
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Professional Job Experience (Updated atomically on verified shift completion or by Admin)
+    match /job_experience/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if isSignedIn() && (resource.data.uid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && request.auth.uid == userId
+        && isValidJobExperience(incoming(), userId)
+        && incoming().totalXp == 0
+        && incoming().entregadorXp == 0
+        && incoming().supermercadoXp == 0
+        && incoming().motoristaXp == 0
+        && incoming().mecanicoXp == 0
+        && incoming().lastSessionId == 'init'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidJobExperience(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            request.auth.uid == userId
+            && incoming().lastSessionId != existing().lastSessionId
+            && !exists(/databases/$(database)/documents/salary_payments/$(incoming().lastSessionId))
+            && getAfter(/databases/$(database)/documents/salary_payments/$(incoming().lastSessionId)).data.uid == userId
+            && incoming().totalXp >= existing().totalXp
+            && incoming().entregadorXp >= existing().entregadorXp
+            && incoming().supermercadoXp >= existing().supermercadoXp
+            && incoming().motoristaXp >= existing().motoristaXp
+            && incoming().mecanicoXp >= existing().mecanicoXp
+            && (incoming().entregadorXp + incoming().supermercadoXp + incoming().motoristaXp + incoming().mecanicoXp) == incoming().totalXp
+            && (incoming().totalXp - existing().totalXp) == getAfter(/databases/$(database)/documents/salary_payments/$(incoming().lastSessionId)).data.xpAwarded
+          )
+          || isAdmin()
+        );
+
+      allow delete: if false;
+    }
+
+    // Authoritative Admin Registry (RBAC)
+    match /admins/{adminUid} {
+      allow get: if isSignedIn() && isValidId(adminUid) && (request.auth.uid == adminUid || isAdmin());
+      allow list: if isBootstrappedAdmin();
+
+      allow create: if isBootstrappedAdmin()
+        && isValidId(adminUid)
+        && isValidAdminRecord(incoming(), adminUid)
+        && incoming().createdAt == request.time;
+
+      allow update: if isBootstrappedAdmin()
+        && isValidId(adminUid)
+        && isValidAdminRecord(incoming(), adminUid)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'label', 'grantedBy']);
+
+      allow delete: if isBootstrappedAdmin() && isValidId(adminUid);
+    }
+
+    // Mixed Economy Base Configuration (Readable by citizens, writable ONLY by verified admins)
+    match /economyConfig/{configId} {
+      allow get: if isSignedIn() && isValidId(configId);
+      allow list: if false;
+
+      allow create: if isVerifiedUser()
+        && isValidId(configId)
+        && isValidEconomyConfig(incoming(), configId)
+        && isAdmin();
+
+      allow update: if isVerifiedUser()
+        && isValidId(configId)
+        && isValidEconomyConfig(incoming(), configId)
+        && incoming().id == existing().id
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'cityName', 'taxRatePercent', 'baseSalaryHourly',
+          'baseFuelPrice', 'basePropertyPrice',
+          'initialCleanCash', 'initialBankBalance', 'defaultMaxDailyPayouts',
+          'marketOpen', 'updatedBy', 'updatedAt'
+        ])
+        && isAdmin();
+
+      allow delete: if false;
+    }
+
+    // Official Immutable Administrative Audit Trail (admin_logs)
+    match /admin_logs/{logId} {
+      allow get: if isVerifiedUser() && isValidId(logId) && isAdmin();
+      allow list: if isBootstrappedAdmin() || (isVerifiedUser() && resource.data.actorUid == request.auth.uid);
+
+      allow create: if isVerifiedUser()
+        && isValidId(logId)
+        && isValidAdminLog(incoming())
+        && isAdmin();
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // MODULE 3: BUSINESS & ENTERPRISE SYSTEM (11 Hardened Collections)
+    // =========================================================================
+
+    // 1. Business Locations Catalog (Admin-configurable 3D lots; public read for signed-in citizens)
+    match /business_locations/{locationId} {
+      allow get: if isSignedIn() && isValidId(locationId);
+      allow list: if isSignedIn() && resource.data.isCatalogLocation == true;
+
+      allow create, update: if isVerifiedUser()
+        && isValidId(locationId)
+        && isValidBusinessLocation(incoming(), locationId)
+        && isAdmin();
+
+      allow delete: if false;
+    }
+
+    // 2. Player-Owned Businesses (Public shared-world metadata; strict owner / P2P atomic transfer / admin writes)
+    match /businesses/{businessId} {
+      allow get: if isSignedIn() && isValidId(businessId);
+      allow list: if isSignedIn() && request.query.limit <= 100;
+
+      allow create: if isVerifiedUser()
+        && isValidId(businessId)
+        && isValidBusinessRecord(incoming(), businessId)
+        && incoming().status == 'active'
+        && incoming().employeeCount == 0
+        && incoming().forSale == false
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          // Standard player business acquisition coupled to verified bank transaction
+          (
+            incoming().ownerUid == request.auth.uid
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type == 'business_purchase'
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.fromUid == request.auth.uid
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.amount,
+              incoming().acquisitionPrice
+            )
+          )
+          ||
+          // Single deterministic official LCE demo dealership (idempotent create-only, never alters player businesses)
+          (
+            businessId == 'biz_concessionaria_demo'
+            && incoming().locationId == 'concessionaria_demo'
+            && incoming().templateType == 'concessionaria'
+            && incoming().ownerUid == 'lce_city_motors'
+            && incoming().salePrice == 0
+            && incoming().lastTxId == 'seed_initial_dealership'
+          )
+        );
+
+      allow update: if isVerifiedUser()
+        && isValidId(businessId)
+        && isValidBusinessRecord(incoming(), businessId)
+        && incoming().id == existing().id
+        && incoming().locationId == existing().locationId
+        && incoming().templateType == existing().templateType
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Owner operational update (cannot arbitrarily change ownership or suspended status)
+          (
+            existing().ownerUid == request.auth.uid
+            && incoming().ownerUid == existing().ownerUid
+            && (existing().status != 'suspended' && incoming().status in ['active', 'inactive_funds'])
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'description', 'status', 'marketValue', 'growthLevel',
+              'employeeCount', 'reputation', 'forSale', 'salePrice', 'lastTxId', 'updatedAt'
+            ])
+          )
+          ||
+          // Verified P2P Business Purchase by another citizen (strictly coupled to atomic business_sale tx)
+          (
+            existing().ownerUid != request.auth.uid
+            && existing().forSale == true
+            && existing().status != 'suspended'
+            && incoming().ownerUid == request.auth.uid
+            && incoming().forSale == false
+            && incoming().salePrice == 0
+            && incoming().lastTxId != existing().lastTxId
+            && !exists(/databases/$(database)/documents/transactions/$(incoming().lastTxId))
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type == 'business_sale'
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.fromUid == request.auth.uid
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.toUid == existing().ownerUid
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.amount,
+              existing().salePrice
+            )
+          )
+          ||
+          // Employee resignation or offer acceptance updating employeeCount by +-1 only
+          (
+            existing().ownerUid != request.auth.uid
+            && incoming().ownerUid == existing().ownerUid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['employeeCount', 'updatedAt'])
+            && (incoming().employeeCount == existing().employeeCount + 1 || incoming().employeeCount == existing().employeeCount - 1)
+          )
+          ||
+          // Citizen review updating reputation & reputationCount only
+          (
+            existing().ownerUid != request.auth.uid
+            && incoming().ownerUid == existing().ownerUid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['reputation', 'reputationCount', 'updatedAt'])
+            && incoming().reputationCount == existing().reputationCount + 1
+          )
+          ||
+          // Admin governance intervention
+          isAdmin()
+        );
+
+      allow delete: if false;
+    }
+
+    // 3. Private Business Finances (STRICTLY Owner & Admin ONLY — Employees NEVER access or modify!)
+    match /business_finances/{businessId} {
+      allow get: if isSignedIn() && isValidId(businessId)
+        && (resource == null || existing().ownerUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn()
+        && (resource.data.ownerUid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser()
+        && isValidId(businessId)
+        && isValidBusinessFinance(incoming(), businessId)
+        && incoming().updatedAt == request.time
+        && (
+          (
+            incoming().ownerUid == request.auth.uid
+            && getAfter(/databases/$(database)/documents/businesses/$(businessId)).data.ownerUid == request.auth.uid
+          )
+          ||
+          // Deterministic initial finance ledger for the official demo dealership (zero starting cash)
+          (
+            businessId == 'biz_concessionaria_demo'
+            && incoming().ownerUid == 'lce_city_motors'
+            && incoming().cashBalance == 0
+            && incoming().totalRevenue == 0
+            && incoming().totalExpenses == 0
+            && incoming().totalPayrollPaid == 0
+            && incoming().netProfit == 0
+            && incoming().lastTxId == 'seed_initial_dealership'
+            && getAfter(/databases/$(database)/documents/businesses/biz_concessionaria_demo).data.ownerUid == 'lce_city_motors'
+          )
+        );
+
+      allow update: if isVerifiedUser()
+        && isValidId(businessId)
+        && isValidBusinessFinance(incoming(), businessId)
+        && incoming().businessId == existing().businessId
+        && incoming().updatedAt == request.time
+        && (
+          // Owner financial mutation coupled 1-to-1 with an immutable business_transactions record
+          (
+            existing().ownerUid == request.auth.uid
+            && incoming().ownerUid == existing().ownerUid
+            && incoming().lastTxId != existing().lastTxId
+            && !exists(/databases/$(database)/documents/business_transactions/$(incoming().lastTxId))
+            && getAfter(/databases/$(database)/documents/business_transactions/$(incoming().lastTxId)).data.businessId == businessId
+            && getAfter(/databases/$(database)/documents/business_transactions/$(incoming().lastTxId)).data.ownerUid == request.auth.uid
+          )
+          ||
+          // Verified Buyer Vehicle Purchase crediting Dealership Cash atomically (no private read required)
+          (
+            existing().ownerUid != request.auth.uid
+            && incoming().ownerUid == existing().ownerUid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['cashBalance', 'totalRevenue', 'netProfit', 'lastTxId', 'updatedAt'])
+            && incoming().lastTxId != existing().lastTxId
+            && !exists(/databases/$(database)/documents/business_transactions/$(incoming().lastTxId))
+            && getAfter(/databases/$(database)/documents/business_transactions/$(incoming().lastTxId)).data.type == 'vehicle_sale'
+            && getAfter(/databases/$(database)/documents/business_transactions/$(incoming().lastTxId)).data.businessId == businessId
+            && getAfter(/databases/$(database)/documents/business_transactions/$(incoming().lastTxId)).data.actorUid == request.auth.uid
+            && incoming().cashBalance > existing().cashBalance
+            && approxEqual(
+              incoming().cashBalance - existing().cashBalance,
+              getAfter(/databases/$(database)/documents/business_transactions/$(incoming().lastTxId)).data.amount
+            )
+            && approxEqual(
+              incoming().totalRevenue - existing().totalRevenue,
+              getAfter(/databases/$(database)/documents/business_transactions/$(incoming().lastTxId)).data.amount
+            )
+            && approxEqual(
+              incoming().netProfit - existing().netProfit,
+              getAfter(/databases/$(database)/documents/business_transactions/$(incoming().lastTxId)).data.amount
+            )
+          )
+          ||
+          // Atomic P2P ownership transfer (cashBalance preserved verbatim)
+          (
+            existing().ownerUid != request.auth.uid
+            && incoming().ownerUid == request.auth.uid
+            && incoming().cashBalance == existing().cashBalance
+            && incoming().totalRevenue == existing().totalRevenue
+            && incoming().totalExpenses == existing().totalExpenses
+            && incoming().totalPayrollPaid == existing().totalPayrollPaid
+            && getAfter(/databases/$(database)/documents/businesses/$(businessId)).data.ownerUid == request.auth.uid
+          )
+          || isAdmin()
+        );
+
+      allow delete: if false;
+    }
+
+    // 4. Business Job Vacancies (Public read so players can browse open jobs; Owner/Admin write)
+    match /business_vacancies/{vacancyId} {
+      allow get: if isSignedIn() && isValidId(vacancyId);
+      allow list: if isSignedIn() && request.query.limit <= 100;
+
+      allow create: if isVerifiedUser()
+        && isValidId(vacancyId)
+        && isValidBusinessVacancy(incoming(), vacancyId)
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && get(/databases/$(database)/documents/businesses/$(incoming().businessId)).data.ownerUid == request.auth.uid;
+
+      allow update: if isVerifiedUser()
+        && isValidId(vacancyId)
+        && isValidBusinessVacancy(incoming(), vacancyId)
+        && incoming().id == existing().id
+        && incoming().businessId == existing().businessId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (existing().ownerUid == request.auth.uid && incoming().ownerUid == existing().ownerUid)
+          || (
+            incoming().ownerUid == existing().ownerUid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['filledSlots', 'status', 'updatedAt'])
+            && incoming().filledSlots == existing().filledSlots + 1
+          )
+          || (
+            incoming().ownerUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['ownerUid', 'updatedAt'])
+            && getAfter(/databases/$(database)/documents/businesses/$(incoming().businessId)).data.ownerUid == request.auth.uid
+          )
+          || isAdmin()
+        );
+
+      allow delete: if false;
+    }
+
+    // 5. Business Employees & Contracts (Employees can ONLY resign; never alter salary or payroll!)
+    match /business_employees/{contractId} {
+      allow get: if isSignedIn() && isValidId(contractId)
+        && (resource == null || existing().ownerUid == request.auth.uid || existing().employeeUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn()
+        && (resource.data.ownerUid == request.auth.uid || resource.data.employeeUid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser()
+        && isValidId(contractId)
+        && isValidBusinessEmployee(incoming(), contractId)
+        && incoming().status == 'active'
+        && incoming().totalPaid == 0
+        && incoming().paymentsCount == 0
+        && incoming().hiredAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          (
+            incoming().ownerUid == request.auth.uid
+            && get(/databases/$(database)/documents/businesses/$(incoming().businessId)).data.ownerUid == request.auth.uid
+          )
+          || (
+            incoming().employeeUid == request.auth.uid
+            && get(/databases/$(database)/documents/businesses/$(incoming().businessId)).data.ownerUid == incoming().ownerUid
+          )
+        );
+
+      allow update: if isVerifiedUser()
+        && isValidId(contractId)
+        && isValidBusinessEmployee(incoming(), contractId)
+        && incoming().id == existing().id
+        && incoming().businessId == existing().businessId
+        && incoming().employeeUid == existing().employeeUid
+        && incoming().hiredAt == existing().hiredAt
+        && incoming().updatedAt == request.time
+        && (
+          // Owner manages contract (promote, change role/salary, terminate, reactivate, or record verified payroll)
+          (
+            existing().ownerUid == request.auth.uid
+            && incoming().ownerUid == existing().ownerUid
+            && (
+              // Non-payroll contract update (totalPaid/paymentsCount untouched)
+              (
+                incoming().totalPaid == existing().totalPaid
+                && incoming().paymentsCount == existing().paymentsCount
+              )
+              ||
+              // Verified atomic payroll update
+              (
+                existing().status == 'active'
+                && incoming().paymentsCount == existing().paymentsCount + 1
+                && getAfter(/databases/$(database)/documents/business_payroll/$(incoming().lastPayrollId)).data.contractId == contractId
+                && approxEqual(
+                  incoming().totalPaid - existing().totalPaid,
+                  getAfter(/databases/$(database)/documents/business_payroll/$(incoming().lastPayrollId)).data.amount
+                )
+              )
+            )
+          )
+          ||
+          // Employee may ONLY resign (cannot alter salary, role, or payments!)
+          (
+            existing().employeeUid == request.auth.uid
+            && existing().status == 'active'
+            && incoming().status == 'resigned'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+          ||
+          // Atomic P2P ownership transfer updates ownerUid only
+          (
+            incoming().ownerUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['ownerUid', 'updatedAt'])
+            && getAfter(/databases/$(database)/documents/businesses/$(incoming().businessId)).data.ownerUid == request.auth.uid
+          )
+          || isAdmin()
+        );
+
+      allow delete: if false;
+    }
+
+    // 6. Business Job Applications & Offers
+    match /business_applications/{applicationId} {
+      allow get: if isSignedIn() && isValidId(applicationId)
+        && (resource == null || existing().ownerUid == request.auth.uid || existing().applicantUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn()
+        && (resource.data.ownerUid == request.auth.uid || resource.data.applicantUid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser()
+        && isValidId(applicationId)
+        && isValidBusinessApplication(incoming(), applicationId)
+        && incoming().applicantUid == request.auth.uid
+        && incoming().status == 'pending'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(applicationId)
+        && isValidBusinessApplication(incoming(), applicationId)
+        && incoming().id == existing().id
+        && incoming().businessId == existing().businessId
+        && incoming().applicantUid == existing().applicantUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            existing().ownerUid == request.auth.uid
+            && existing().status in ['pending', 'offer_sent']
+            && incoming().status in ['offer_sent', 'hired', 'rejected']
+          )
+          || (
+            existing().applicantUid == request.auth.uid
+            && (
+              (existing().status == 'offer_sent' && incoming().status in ['hired', 'declined'])
+              || (existing().status == 'pending' && incoming().status == 'withdrawn')
+            )
+            && incoming().offeredSalary == existing().offeredSalary
+            && incoming().roleTitle == existing().roleTitle
+          )
+          || isAdmin()
+        );
+
+      allow delete: if false;
+    }
+
+    // 7. Business Products Catalog (Public read; Owner/Admin write within admin margin bounds)
+    match /business_products/{productId} {
+      allow get: if isSignedIn() && isValidId(productId);
+      allow list: if isSignedIn() && request.query.limit <= 100;
+
+      allow create: if isVerifiedUser()
+        && isValidId(productId)
+        && isValidBusinessProduct(incoming(), productId)
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && get(/databases/$(database)/documents/businesses/$(incoming().businessId)).data.ownerUid == request.auth.uid;
+
+      allow update: if isVerifiedUser()
+        && isValidId(productId)
+        && isValidBusinessProduct(incoming(), productId)
+        && incoming().id == existing().id
+        && incoming().businessId == existing().businessId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (existing().ownerUid == request.auth.uid && incoming().ownerUid == existing().ownerUid)
+          || (
+            incoming().ownerUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['ownerUid', 'updatedAt'])
+            && getAfter(/databases/$(database)/documents/businesses/$(incoming().businessId)).data.ownerUid == request.auth.uid
+          )
+          || isAdmin()
+        );
+
+      allow delete: if false;
+    }
+
+    // 8. Business Inventory (Public read; Owner/Admin write)
+    match /business_inventory/{inventoryId} {
+      allow get: if isSignedIn() && isValidId(inventoryId);
+      allow list: if isSignedIn() && request.query.limit <= 100;
+
+      allow create: if isVerifiedUser()
+        && isValidId(inventoryId)
+        && isValidBusinessInventory(incoming(), inventoryId)
+        && incoming().ownerUid == request.auth.uid
+        && incoming().updatedAt == request.time
+        && get(/databases/$(database)/documents/businesses/$(incoming().businessId)).data.ownerUid == request.auth.uid;
+
+      allow update: if isVerifiedUser()
+        && isValidId(inventoryId)
+        && isValidBusinessInventory(incoming(), inventoryId)
+        && incoming().id == existing().id
+        && incoming().businessId == existing().businessId
+        && incoming().updatedAt == request.time
+        && (
+          (existing().ownerUid == request.auth.uid && incoming().ownerUid == existing().ownerUid)
+          || (
+            incoming().ownerUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['ownerUid', 'updatedAt'])
+            && getAfter(/databases/$(database)/documents/businesses/$(incoming().businessId)).data.ownerUid == request.auth.uid
+          )
+          || isAdmin()
+        );
+
+      allow delete: if false;
+    }
+
+    // 9. Immutable Business Financial Transactions Ledger
+    match /business_transactions/{txId} {
+      allow get: if isSignedIn() && isValidId(txId)
+        && (resource == null || existing().ownerUid == request.auth.uid || existing().counterpartyUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn()
+        && (resource.data.ownerUid == request.auth.uid || resource.data.counterpartyUid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser()
+        && isValidId(txId)
+        && isValidBusinessTransaction(incoming(), txId)
+        && (
+          (
+            incoming().type in ['acquisition', 'p2p_sale']
+            && getAfter(/databases/$(database)/documents/businesses/$(incoming().businessId)).data.ownerUid == request.auth.uid
+          )
+          || (
+            incoming().type == 'payroll'
+            && getAfter(/databases/$(database)/documents/business_payroll/$(incoming().operationId)).data.ownerUid == request.auth.uid
+          )
+          || (
+            incoming().type in [
+              'capital_inject', 'capital_withdraw', 'inventory_purchase',
+              'product_sale', 'operating_expense', 'vehicle_restock', 'vehicle_commission'
+            ]
+            && incoming().ownerUid == request.auth.uid
+            && get(/databases/$(database)/documents/businesses/$(incoming().businessId)).data.ownerUid == request.auth.uid
+          )
+          || (
+            incoming().type == 'vehicle_sale'
+            && incoming().direction == 'in'
+            && incoming().actorUid == request.auth.uid
+            && incoming().counterpartyUid == request.auth.uid
+            && incoming().ownerUid == get(/databases/$(database)/documents/businesses/$(incoming().businessId)).data.ownerUid
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().operationId)).data.type == 'vehicle_purchase'
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().operationId)).data.fromUid == request.auth.uid
+            && approxEqual(
+              incoming().amount,
+              getAfter(/databases/$(database)/documents/transactions/$(incoming().operationId)).data.amount
+            )
+          )
+          || (incoming().type == 'admin_adjustment' && isAdmin())
+        );
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // 10. Immutable Idempotent Business Payroll Ledger
+    match /business_payroll/{payrollId} {
+      allow get: if isSignedIn() && isValidId(payrollId)
+        && (resource == null || existing().ownerUid == request.auth.uid || existing().employeeUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn()
+        && (resource.data.ownerUid == request.auth.uid || resource.data.employeeUid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser()
+        && isValidId(payrollId)
+        && isValidBusinessPayroll(incoming(), payrollId)
+        && get(/databases/$(database)/documents/business_employees/$(incoming().contractId)).data.status == 'active'
+        && get(/databases/$(database)/documents/business_employees/$(incoming().contractId)).data.ownerUid == request.auth.uid
+        && get(/databases/$(database)/documents/business_employees/$(incoming().contractId)).data.employeeUid == incoming().employeeUid
+        && get(/databases/$(database)/documents/business_employees/$(incoming().contractId)).data.businessId == incoming().businessId
+        && approxEqual(incoming().amount, get(/databases/$(database)/documents/business_employees/$(incoming().contractId)).data.salary)
+        && get(/databases/$(database)/documents/business_finances/$(incoming().businessId)).data.cashBalance >= incoming().amount;
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // 11. Business Customer Reviews & Reputation Log
+    match /business_reviews/{reviewId} {
+      allow get: if isSignedIn() && isValidId(reviewId);
+      allow list: if isSignedIn() && request.query.limit <= 100;
+
+      allow create: if isVerifiedUser()
+        && isValidId(reviewId)
+        && isValidBusinessReview(incoming(), reviewId)
+        && get(/databases/$(database)/documents/businesses/$(incoming().businessId)).data.ownerUid != request.auth.uid;
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // MODULE 4: VEHICLES, DEALERSHIPS & GARAGE SYSTEM (8 Hardened Collections)
+    // =========================================================================
+
+    // 1. Official Vehicle Catalog (Public read for signed-in citizens; Admin write only)
+    match /vehicle_catalog/{modelId} {
+      allow get: if isSignedIn() && isValidId(modelId);
+      allow list: if isSignedIn() && resource.data.isCatalogVehicle == true;
+
+      allow create, update: if isVerifiedUser()
+        && isValidId(modelId)
+        && isValidVehicleCatalogModel(incoming(), modelId)
+        && isAdmin();
+
+      allow delete: if false;
+    }
+
+    // 2. Dealership Vehicle Stock Units (Public showroom read; Owner stock/pricing; Atomic buyer purchase)
+    match /dealership_inventory/{stockId} {
+      allow get: if isSignedIn() && isValidId(stockId);
+      allow list: if isSignedIn() && request.query.limit <= 100;
+
+      allow create: if isVerifiedUser()
+        && isValidId(stockId)
+        && isValidDealershipStock(incoming(), stockId)
+        && incoming().status == 'available'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          // Dealership owner restocks a unit from verified business cash
+          (
+            incoming().ownerUid == request.auth.uid
+            && get(/databases/$(database)/documents/businesses/$(incoming().businessId)).data.ownerUid == request.auth.uid
+            && get(/databases/$(database)/documents/businesses/$(incoming().businessId)).data.templateType == 'concessionaria'
+            && getAfter(/databases/$(database)/documents/business_transactions/$(incoming().lastTxId)).data.type == 'vehicle_restock'
+            && getAfter(/databases/$(database)/documents/business_transactions/$(incoming().lastTxId)).data.businessId == incoming().businessId
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/business_transactions/$(incoming().lastTxId)).data.amount,
+              incoming().purchaseCost
+            )
+          )
+          ||
+          // Deterministic initial showroom stock for the official demo dealership (2 units per model, create-only)
+          (
+            stockId.matches('^stk_demo_[a-z0-9_]+_[12]$')
+            && incoming().businessId == 'biz_concessionaria_demo'
+            && incoming().ownerUid == 'lce_city_motors'
+            && incoming().promoDiscountPercent == 0
+            && incoming().commissionPercent == 0
+            && incoming().finalPrice == incoming().salePrice
+            && incoming().assignedSellerUid == 'none'
+            && incoming().lastTxId == 'seed_initial_stock'
+            && getAfter(/databases/$(database)/documents/businesses/biz_concessionaria_demo).data.templateType == 'concessionaria'
+          )
+          ||
+          // Admin replenishment of the official demo dealership
+          (
+            isAdmin()
+            && incoming().businessId == 'biz_concessionaria_demo'
+            && incoming().ownerUid == 'lce_city_motors'
+            && getAfter(/databases/$(database)/documents/businesses/biz_concessionaria_demo).data.templateType == 'concessionaria'
+          )
+        );
+
+      allow update: if isVerifiedUser()
+        && isValidId(stockId)
+        && isValidDealershipStock(incoming(), stockId)
+        && incoming().id == existing().id
+        && incoming().businessId == existing().businessId
+        && incoming().modelId == existing().modelId
+        && incoming().purchaseCost == existing().purchaseCost
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Owner adjusts price, discount, commission, seller assignment, or removes unsold stock
+          (
+            existing().ownerUid == request.auth.uid
+            && incoming().ownerUid == existing().ownerUid
+            && existing().status == 'available'
+            && incoming().status in ['available', 'removed']
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'salePrice', 'promoDiscountPercent', 'finalPrice', 'commissionPercent',
+              'assignedSellerUid', 'assignedSellerName', 'status', 'updatedAt'
+            ])
+          )
+          ||
+          // Verified buyer atomically purchases an available unit (marks status -> sold)
+          (
+            existing().ownerUid != request.auth.uid
+            && incoming().ownerUid == existing().ownerUid
+            && existing().status == 'available'
+            && incoming().status == 'sold'
+            && incoming().soldToUid == request.auth.uid
+            && incoming().lastTxId != existing().lastTxId
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'soldToUid', 'soldVehicleId', 'lastTxId', 'updatedAt'
+            ])
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type == 'vehicle_purchase'
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.fromUid == request.auth.uid
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.operationId == stockId
+            && approxEqual(
+              getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.amount,
+              existing().finalPrice
+            )
+          )
+          ||
+          // Dealership ownership transfer updates ownerUid only
+          (
+            incoming().ownerUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['ownerUid', 'ownerName', 'updatedAt'])
+            && getAfter(/databases/$(database)/documents/businesses/$(incoming().businessId)).data.ownerUid == request.auth.uid
+          )
+          || isAdmin()
+        );
+
+      allow delete: if false;
+    }
+
+    // 3. Individual Player Vehicles (Single-Owner Guarantee; Private Garage + Atomic Purchase/P2P Transfer)
+    match /vehicles/{vehicleId} {
+      allow get: if isSignedIn() && isValidId(vehicleId)
+        && (resource == null || existing().ownerUid == request.auth.uid || existing().status == 'listed' || isAdmin());
+      allow list: if isSignedIn()
+        && (resource.data.ownerUid == request.auth.uid || resource.data.status == 'listed' || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser()
+        && isValidId(vehicleId)
+        && isValidPlayerVehicle(incoming(), vehicleId)
+        && incoming().ownerUid == request.auth.uid
+        && incoming().status == 'in_garage'
+        && incoming().activeListingId == 'none'
+        && incoming().acquiredAt == request.time
+        && incoming().updatedAt == request.time
+        && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type == 'vehicle_purchase'
+        && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.fromUid == request.auth.uid;
+
+      allow update: if isVerifiedUser()
+        && isValidId(vehicleId)
+        && isValidPlayerVehicle(incoming(), vehicleId)
+        && incoming().id == existing().id
+        && incoming().modelId == existing().modelId
+        && incoming().plate == existing().plate
+        && incoming().acquiredAt == existing().acquiredAt
+        && incoming().updatedAt == request.time
+        && (
+          // Owner lists/unlists vehicle or parks it (cannot forge condition/fuel upward without maintenance tx!)
+          (
+            existing().ownerUid == request.auth.uid
+            && incoming().ownerUid == existing().ownerUid
+            && incoming().condition == existing().condition
+            && incoming().fuelLevel == existing().fuelLevel
+            && incoming().mileageKm == existing().mileageKm
+            && incoming().marketValue == existing().marketValue
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'activeListingId', 'parkedZone', 'parkedX', 'parkedZ', 'updatedAt'
+            ])
+          )
+          ||
+          // Owner paid maintenance/fuel/repair (coupled atomically to vehicle_maintenance bank tx)
+          (
+            existing().ownerUid == request.auth.uid
+            && incoming().ownerUid == existing().ownerUid
+            && incoming().lastTxId != existing().lastTxId
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'condition', 'fuelLevel', 'marketValue', 'lastTxId', 'updatedAt'
+            ])
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type == 'vehicle_maintenance'
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.fromUid == request.auth.uid
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.operationId == vehicleId
+          )
+          ||
+          // Owner usage wear (mileage strictly increases; fuel/condition/marketValue never increase)
+          (
+            existing().ownerUid == request.auth.uid
+            && incoming().ownerUid == existing().ownerUid
+            && existing().status != 'listed'
+            && incoming().mileageKm >= existing().mileageKm
+            && incoming().condition <= existing().condition
+            && incoming().fuelLevel <= existing().fuelLevel
+            && incoming().marketValue <= existing().marketValue
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'condition', 'fuelLevel', 'mileageKm', 'marketValue', 'parkedZone', 'parkedX', 'parkedZ', 'updatedAt'
+            ])
+          )
+          ||
+          // Verified P2P Used Vehicle Purchase (Atomic single-owner transfer coupled to vehicle_p2p_sale tx)
+          (
+            existing().ownerUid != request.auth.uid
+            && existing().status == 'listed'
+            && incoming().ownerUid == request.auth.uid
+            && incoming().status == 'in_garage'
+            && incoming().activeListingId == 'none'
+            && incoming().lastTxId != existing().lastTxId
+            && !exists(/databases/$(database)/documents/transactions/$(incoming().lastTxId))
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.type == 'vehicle_p2p_sale'
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.fromUid == request.auth.uid
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxId)).data.toUid == existing().ownerUid
+          )
+          || isAdmin()
+        );
+
+      allow delete: if false;
+    }
+
+    // 4. Immutable Vehicle Transactions Ledger
+    match /vehicle_transactions/{txId} {
+      allow get: if isSignedIn() && isValidId(txId)
+        && (resource == null || request.auth.uid in existing().participants || isAdmin());
+      allow list: if isSignedIn()
+        && (request.auth.uid in resource.data.participants || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser()
+        && isValidId(txId)
+        && isValidVehicleTransaction(incoming(), txId)
+        && request.auth.uid in incoming().participants;
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // 5. P2P Used Vehicle Marketplace Listings
+    match /vehicle_listings/{listingId} {
+      allow get: if isSignedIn() && isValidId(listingId);
+      allow list: if isSignedIn() && request.query.limit <= 100;
+
+      allow create: if isVerifiedUser()
+        && isValidId(listingId)
+        && isValidVehicleListing(incoming(), listingId)
+        && incoming().sellerUid == request.auth.uid
+        && incoming().status == 'active'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && get(/databases/$(database)/documents/vehicles/$(incoming().vehicleId)).data.ownerUid == request.auth.uid
+        && get(/databases/$(database)/documents/vehicles/$(incoming().vehicleId)).data.status == 'in_garage'
+        && getAfter(/databases/$(database)/documents/vehicles/$(incoming().vehicleId)).data.status == 'listed'
+        && getAfter(/databases/$(database)/documents/vehicles/$(incoming().vehicleId)).data.activeListingId == listingId;
+
+      allow update: if isVerifiedUser()
+        && isValidId(listingId)
+        && isValidVehicleListing(incoming(), listingId)
+        && incoming().id == existing().id
+        && incoming().vehicleId == existing().vehicleId
+        && incoming().sellerUid == existing().sellerUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Seller updates price/description or cancels active listing
+          (
+            existing().sellerUid == request.auth.uid
+            && existing().status == 'active'
+            && incoming().status in ['active', 'cancelled']
+            && incoming().diff(existing()).affectedKeys().hasOnly(['askingPrice', 'description', 'status', 'updatedAt'])
+          )
+          ||
+          // Buyer purchases listed vehicle atomically (direct or via accepted offer)
+          (
+            existing().sellerUid != request.auth.uid
+            && existing().status == 'active'
+            && incoming().status == 'sold'
+            && incoming().buyerUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'buyerUid', 'soldTxId', 'updatedAt'])
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().soldTxId)).data.type == 'vehicle_p2p_sale'
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().soldTxId)).data.fromUid == request.auth.uid
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().soldTxId)).data.toUid == existing().sellerUid
+            && getAfter(/databases/$(database)/documents/vehicles/$(existing().vehicleId)).data.ownerUid == request.auth.uid
+          )
+          ||
+          // Admin suspends fraudulent listing
+          (
+            isAdmin()
+            && incoming().status == 'suspended'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // 6. P2P Used Vehicle Offers (Private to Buyer, Seller & Admin)
+    match /vehicle_offers/{offerId} {
+      allow get: if isSignedIn() && isValidId(offerId)
+        && (resource == null || existing().buyerUid == request.auth.uid || existing().sellerUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn()
+        && (resource.data.buyerUid == request.auth.uid || resource.data.sellerUid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser()
+        && isValidId(offerId)
+        && isValidVehicleOffer(incoming(), offerId)
+        && incoming().buyerUid == request.auth.uid
+        && incoming().status == 'pending'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && get(/databases/$(database)/documents/vehicle_listings/$(incoming().listingId)).data.status == 'active'
+        && get(/databases/$(database)/documents/vehicle_listings/$(incoming().listingId)).data.sellerUid == incoming().sellerUid
+        && get(/databases/$(database)/documents/vehicle_listings/$(incoming().listingId)).data.vehicleId == incoming().vehicleId;
+
+      allow update: if isVerifiedUser()
+        && isValidId(offerId)
+        && isValidVehicleOffer(incoming(), offerId)
+        && incoming().id == existing().id
+        && incoming().listingId == existing().listingId
+        && incoming().vehicleId == existing().vehicleId
+        && incoming().sellerUid == existing().sellerUid
+        && incoming().buyerUid == existing().buyerUid
+        && incoming().offerPrice == existing().offerPrice
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Seller accepts or rejects a pending offer
+          (
+            existing().sellerUid == request.auth.uid
+            && existing().status == 'pending'
+            && incoming().status in ['accepted', 'rejected']
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+          ||
+          // Buyer withdraws pending/accepted offer
+          (
+            existing().buyerUid == request.auth.uid
+            && existing().status in ['pending', 'accepted']
+            && incoming().status == 'withdrawn'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+          ||
+          // Buyer completes accepted offer atomically with verified vehicle_p2p_sale tx
+          (
+            existing().buyerUid == request.auth.uid
+            && existing().status == 'accepted'
+            && incoming().status == 'completed'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'completedTxId', 'updatedAt'])
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().completedTxId)).data.type == 'vehicle_p2p_sale'
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().completedTxId)).data.fromUid == request.auth.uid
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().completedTxId)).data.operationId == offerId
+          )
+          || isAdmin()
+        );
+
+      allow delete: if false;
+    }
+
+    // 7. Immutable Vehicle Maintenance & Fuel History
+    match /vehicle_maintenance/{maintId} {
+      allow get: if isSignedIn() && isValidId(maintId)
+        && (resource == null || existing().ownerUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn()
+        && (resource.data.ownerUid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser()
+        && isValidId(maintId)
+        && isValidVehicleMaintenance(incoming(), maintId)
+        && get(/databases/$(database)/documents/vehicles/$(incoming().vehicleId)).data.ownerUid == request.auth.uid
+        && getAfter(/databases/$(database)/documents/transactions/$(incoming().bankTxId)).data.type == 'vehicle_maintenance'
+        && getAfter(/databases/$(database)/documents/transactions/$(incoming().bankTxId)).data.fromUid == request.auth.uid
+        && approxEqual(
+          incoming().cost,
+          getAfter(/databases/$(database)/documents/transactions/$(incoming().bankTxId)).data.amount
+        );
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // 8. Dealership Salesperson Commissions
+    match /vehicle_commissions/{commissionId} {
+      allow get: if isSignedIn() && isValidId(commissionId)
+        && (resource == null || existing().ownerUid == request.auth.uid || existing().sellerUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn()
+        && (resource.data.ownerUid == request.auth.uid || resource.data.sellerUid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser()
+        && isValidId(commissionId)
+        && isValidVehicleCommission(incoming(), commissionId)
+        && incoming().status == 'pending'
+        && incoming().createdAt == request.time
+        && getAfter(/databases/$(database)/documents/transactions/$(incoming().saleTxId)).data.type == 'vehicle_purchase'
+        && getAfter(/databases/$(database)/documents/transactions/$(incoming().saleTxId)).data.fromUid == request.auth.uid
+        && getAfter(/databases/$(database)/documents/dealership_inventory/$(incoming().stockId)).data.status == 'sold';
+
+      allow update: if isVerifiedUser()
+        && isValidId(commissionId)
+        && isValidVehicleCommission(incoming(), commissionId)
+        && incoming().id == existing().id
+        && incoming().businessId == existing().businessId
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().sellerUid == existing().sellerUid
+        && incoming().commissionAmount == existing().commissionAmount
+        && incoming().createdAt == existing().createdAt
+        && (
+          (
+            existing().ownerUid == request.auth.uid
+            && existing().status == 'pending'
+            && incoming().status == 'paid'
+            && incoming().paidAt == request.time
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'payoutTxId', 'paidAt'])
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().payoutTxId)).data.type == 'vehicle_commission'
+            && getAfter(/databases/$(database)/documents/transactions/$(incoming().payoutTxId)).data.toUid == existing().sellerUid
+            && approxEqual(
+              existing().commissionAmount,
+              getAfter(/databases/$(database)/documents/transactions/$(incoming().payoutTxId)).data.amount
+            )
+          )
+          || isAdmin()
+        );
+
+      allow delete: if false;
+    }
+
+    // Legacy Module 1 Audit Logs (Read-only preservation — new logs go to admin_logs)
+    match /adminAuditLogs/{logId} {
+      allow get: if isVerifiedUser() && isValidId(logId) && isAdmin();
+      allow list: if isBootstrappedAdmin() || (isVerifiedUser() && resource.data.actorUid == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+  }
+}

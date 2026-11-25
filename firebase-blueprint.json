@@ -1,0 +1,846 @@
+{
+  "entities": {
+    "CharacterProfile": {
+      "title": "CharacterProfile",
+      "description": "Perfil jogável de um cidadão no universo compartilhado LCE (sem PII).",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "characterName": { "type": "string", "minLength": 3, "maxLength": 32, "pattern": "^[a-zA-Z0-9À-ÿ _\\-]+$" },
+        "alias": { "type": "string", "minLength": 2, "maxLength": 24, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "origin": { "type": "string", "enum": ["comerciante", "operario", "corretor", "independente"] },
+        "district": { "type": "string", "enum": ["distrito-central"] },
+        "coatColor": { "type": "string", "minLength": 7, "maxLength": 7, "pattern": "^#[0-9a-fA-F]{6}$" },
+        "accentColor": { "type": "string", "minLength": 7, "maxLength": 7, "pattern": "^#[0-9a-fA-F]{6}$" },
+        "skinTone": { "type": "string", "minLength": 7, "maxLength": 7, "pattern": "^#[0-9a-fA-F]{6}$" },
+        "style": { "type": "string", "enum": ["executivo", "urbano", "tatico"] },
+        "level": { "type": "number" },
+        "experience": { "type": "number" },
+        "reputation": { "type": "number" },
+        "cashBalance": { "type": "number" },
+        "bankBalance": { "type": "number" },
+        "lastX": { "type": "number" },
+        "lastZ": { "type": "number" },
+        "lastRotY": { "type": "number" },
+        "status": { "type": "string", "enum": ["active", "suspended"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "uid", "characterName", "alias", "origin", "district",
+        "coatColor", "accentColor", "skinTone", "style",
+        "level", "experience", "reputation", "cashBalance", "bankBalance",
+        "lastX", "lastZ", "lastRotY", "status", "createdAt", "updatedAt"
+      ]
+    },
+    "UserPrivateAccount": {
+      "title": "UserPrivateAccount",
+      "description": "Dados privados e PII da conta isolados em subcoleção restrita ao titular ou administrador.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "minLength": 3, "maxLength": 160, "format": "email" },
+        "provider": { "type": "string", "enum": ["google", "password"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastLoginAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "provider", "createdAt", "lastLoginAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Registro autoritativo de privilégios administrativos no banco de dados.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "role": { "type": "string", "enum": ["super_admin", "economy_admin", "moderator"] },
+        "label": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "grantedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "role", "label", "grantedBy", "createdAt"]
+    },
+    "EconomyBaseConfig": {
+      "title": "EconomyBaseConfig",
+      "description": "Parâmetros globais, saldos iniciais e limites administráveis da economia mista de LCE.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "cityName": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "taxRatePercent": { "type": "number" },
+        "baseSalaryHourly": { "type": "number" },
+        "baseFuelPrice": { "type": "number" },
+        "basePropertyPrice": { "type": "number" },
+        "initialCleanCash": { "type": "number" },
+        "initialBankBalance": { "type": "number" },
+        "defaultMaxDailyPayouts": { "type": "number" },
+        "marketOpen": { "type": "boolean" },
+        "updatedBy": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "cityName", "taxRatePercent", "baseSalaryHourly",
+        "baseFuelPrice", "basePropertyPrice", "marketOpen", "updatedBy", "updatedAt"
+      ]
+    },
+    "Wallet": {
+      "title": "Wallet",
+      "description": "Carteira financeira individual do personagem (dinheiro físico limpo, dinheiro sujo e avaliação patrimonial).",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "cleanCash": { "type": "number" },
+        "dirtyCash": { "type": "number" },
+        "companiesValue": { "type": "number" },
+        "realEstateValue": { "type": "number" },
+        "vehiclesValue": { "type": "number" },
+        "investmentsValue": { "type": "number" },
+        "otherAssetsValue": { "type": "number" },
+        "lastTxId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "uid", "cleanCash", "dirtyCash", "companiesValue", "realEstateValue",
+        "vehiclesValue", "investmentsValue", "otherAssetsValue", "lastTxId", "createdAt", "updatedAt"
+      ]
+    },
+    "BankAccount": {
+      "title": "BankAccount",
+      "description": "Conta bancária legal do cidadão no Banco Central LCE.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "accountNumber": { "type": "string", "minLength": 6, "maxLength": 24, "pattern": "^[A-Z0-9\\-]+$" },
+        "bankName": { "type": "string", "minLength": 3, "maxLength": 48 },
+        "balance": { "type": "number" },
+        "status": { "type": "string", "enum": ["active", "frozen"] },
+        "lastTxId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "accountNumber", "bankName", "balance", "status", "lastTxId", "createdAt", "updatedAt"]
+    },
+    "BankDirectoryEntry": {
+      "title": "BankDirectoryEntry",
+      "description": "Catálogo público não sensível para identificação de destinatários de transferências (sem saldos e sem PII).",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "characterName": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "alias": { "type": "string", "minLength": 2, "maxLength": 24 },
+        "accountNumber": { "type": "string", "minLength": 6, "maxLength": 24 },
+        "active": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "characterName", "alias", "accountNumber", "active", "updatedAt"]
+    },
+    "FinancialTransaction": {
+      "title": "FinancialTransaction",
+      "description": "Registro imutável de movimentação financeira no livro-razão do LCE.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "operationId": { "type": "string", "minLength": 4, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "type": {
+          "type": "string",
+          "enum": [
+            "deposit",
+            "withdraw",
+            "transfer",
+            "salary",
+            "admin_adjustment",
+            "business_purchase",
+            "business_sale",
+            "business_payroll",
+            "business_capital",
+            "vehicle_purchase",
+            "vehicle_p2p_sale",
+            "vehicle_maintenance",
+            "vehicle_commission"
+          ]
+        },
+        "currencyCategory": { "type": "string", "enum": ["clean_cash", "bank", "dirty_cash"] },
+        "amount": { "type": "number" },
+        "fromUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "fromLabel": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "toUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "toLabel": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "participants": { "type": "array", "description": "Lista limitada a 1 ou 2 UIDs participantes para consulta segura de extrato." },
+        "description": { "type": "string", "minLength": 3, "maxLength": 180 },
+        "status": { "type": "string", "enum": ["completed"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "operationId", "type", "currencyCategory", "amount",
+        "fromUid", "fromLabel", "toUid", "toLabel", "actorUid",
+        "participants", "description", "status", "createdAt"
+      ]
+    },
+    "JobDefinition": {
+      "title": "JobDefinition",
+      "description": "Cadastro administrável de profissão legal na cidade.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 40, "pattern": "^[a-z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "description": { "type": "string", "minLength": 6, "maxLength": 240 },
+        "baseSalary": { "type": "number" },
+        "durationSeconds": { "type": "number" },
+        "cooldownSeconds": { "type": "number" },
+        "maxDailyPayouts": { "type": "number" },
+        "minLevel": { "type": "number" },
+        "requiredExperience": { "type": "number" },
+        "xpReward": { "type": "number" },
+        "reputationReward": { "type": "number" },
+        "available": { "type": "boolean" },
+        "isCatalogJob": { "type": "boolean" },
+        "updatedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "name", "description", "baseSalary", "durationSeconds",
+        "cooldownSeconds", "maxDailyPayouts", "minLevel", "requiredExperience",
+        "xpReward", "reputationReward", "available", "isCatalogJob", "updatedBy", "updatedAt"
+      ]
+    },
+    "WorkSession": {
+      "title": "WorkSession",
+      "description": "Expediente de trabalho controlado por tempo mínimo e validação do servidor.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 4, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "jobId": { "type": "string", "minLength": 2, "maxLength": 40, "pattern": "^[a-z0-9_\\-]+$" },
+        "jobName": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "status": { "type": "string", "enum": ["in_progress", "completed", "cancelled"] },
+        "durationSeconds": { "type": "number" },
+        "expectedSalary": { "type": "number" },
+        "xpReward": { "type": "number" },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "completedAt": { "type": "string", "format": "date-time" },
+        "payoutTxId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["id", "uid", "jobId", "jobName", "status", "durationSeconds", "expectedSalary", "xpReward", "startedAt"]
+    },
+    "SalaryPayment": {
+      "title": "SalaryPayment",
+      "description": "Comprovante imutável de pagamento salarial indexado pelo sessionId (impede duplicidade).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 4, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "sessionId": { "type": "string", "minLength": 4, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "jobId": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "jobName": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "amount": { "type": "number" },
+        "xpAwarded": { "type": "number" },
+        "tierLabel": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "txId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "paidAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "sessionId", "uid", "jobId", "jobName", "amount", "xpAwarded", "tierLabel", "txId", "paidAt"]
+    },
+    "JobExperience": {
+      "title": "JobExperience",
+      "description": "Experiência profissional acumulada por profissão para progressão de níveis.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "totalXp": { "type": "number" },
+        "entregadorXp": { "type": "number" },
+        "supermercadoXp": { "type": "number" },
+        "motoristaXp": { "type": "number" },
+        "mecanicoXp": { "type": "number" },
+        "lastSessionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "uid", "totalXp", "entregadorXp", "supermercadoXp",
+        "motoristaXp", "mecanicoXp", "lastSessionId", "createdAt", "updatedAt"
+      ]
+    },
+    "AdminLog": {
+      "title": "AdminLog",
+      "description": "Trilha imutável de auditoria administrativa (coleção oficial admin_logs).",
+      "type": "object",
+      "properties": {
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "action": {
+          "type": "string",
+          "enum": [
+            "update_economy_config",
+            "bootstrap_admin",
+            "update_citizen_status",
+            "update_job_config",
+            "admin_balance_adjustment",
+            "create_business_location",
+            "update_business_location",
+            "admin_business_action",
+            "create_vehicle_model",
+            "update_vehicle_model",
+            "suspend_vehicle_listing",
+            "admin_vehicle_action"
+          ]
+        },
+        "targetUid": { "type": "string", "maxLength": 128 },
+        "summary": { "type": "string", "minLength": 3, "maxLength": 240 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["actorUid", "action", "summary", "createdAt"]
+    },
+    "BusinessLocation": {
+      "title": "BusinessLocation",
+      "description": "Localização e parâmetros administráveis de estabelecimentos empresariais na cidade 3D.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "templateType": { "type": "string", "enum": ["concessionaria", "supermercado", "oficina", "transportadora", "restaurante", "imobiliaria", "seguranca", "loja_roupas", "posto_combustivel", "entretenimento"] },
+        "name": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "category": { "type": "string", "minLength": 2, "maxLength": 48 },
+        "description": { "type": "string", "minLength": 6, "maxLength": 240 },
+        "acquisitionPrice": { "type": "number" },
+        "initialCapital": { "type": "number" },
+        "operatingExpense": { "type": "number" },
+        "maxEmployees": { "type": "number" },
+        "revenuePotential": { "type": "number" },
+        "minPriceMultiplier": { "type": "number" },
+        "maxPriceMultiplier": { "type": "number" },
+        "locationLabel": { "type": "string", "minLength": 3, "maxLength": 80 },
+        "posX": { "type": "number" },
+        "posZ": { "type": "number" },
+        "available": { "type": "boolean" },
+        "isCatalogLocation": { "type": "boolean" },
+        "updatedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "templateType", "name", "category", "description", "acquisitionPrice", "initialCapital", "operatingExpense", "maxEmployees", "revenuePotential", "minPriceMultiplier", "maxPriceMultiplier", "locationLabel", "posX", "posZ", "available", "isCatalogLocation", "updatedBy", "updatedAt"]
+    },
+    "BusinessRecord": {
+      "title": "BusinessRecord",
+      "description": "Empresa pertencente a um jogador real no universo compartilhado LCE.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 3, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "locationId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "templateType": { "type": "string" },
+        "name": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "category": { "type": "string", "minLength": 2, "maxLength": 48 },
+        "description": { "type": "string", "minLength": 6, "maxLength": 240 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ownerName": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "ownerAlias": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "status": { "type": "string", "enum": ["active", "inactive_funds", "suspended"] },
+        "acquisitionPrice": { "type": "number" },
+        "marketValue": { "type": "number" },
+        "operatingExpense": { "type": "number" },
+        "maxEmployees": { "type": "number" },
+        "growthLevel": { "type": "number" },
+        "employeeCount": { "type": "number" },
+        "reputation": { "type": "number" },
+        "reputationCount": { "type": "number" },
+        "forSale": { "type": "boolean" },
+        "salePrice": { "type": "number" },
+        "locationLabel": { "type": "string", "minLength": 3, "maxLength": 80 },
+        "posX": { "type": "number" },
+        "posZ": { "type": "number" },
+        "lastTxId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "locationId", "templateType", "name", "category", "description", "ownerUid", "ownerName", "ownerAlias", "status", "acquisitionPrice", "marketValue", "operatingExpense", "maxEmployees", "growthLevel", "employeeCount", "reputation", "reputationCount", "forSale", "salePrice", "locationLabel", "posX", "posZ", "lastTxId", "createdAt", "updatedAt"]
+    },
+    "BusinessFinance": {
+      "title": "BusinessFinance",
+      "description": "Caixa privado, receitas, despesas, folha acumulada e resultado financeiro da empresa.",
+      "type": "object",
+      "properties": {
+        "businessId": { "type": "string", "minLength": 3, "maxLength": 128 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "cashBalance": { "type": "number" },
+        "totalRevenue": { "type": "number" },
+        "totalExpenses": { "type": "number" },
+        "totalPayrollPaid": { "type": "number" },
+        "netProfit": { "type": "number" },
+        "lastTxId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["businessId", "ownerUid", "cashBalance", "totalRevenue", "totalExpenses", "totalPayrollPaid", "netProfit", "lastTxId", "updatedAt"]
+    },
+    "BusinessVacancy": {
+      "title": "BusinessVacancy",
+      "description": "Vaga de emprego publicada por uma empresa de jogador.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "businessId": { "type": "string", "minLength": 3, "maxLength": 128 },
+        "businessName": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "roleTitle": { "type": "string", "minLength": 2, "maxLength": 48 },
+        "salary": { "type": "number" },
+        "schedule": { "type": "string", "minLength": 2, "maxLength": 48 },
+        "requirements": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "slots": { "type": "number" },
+        "filledSlots": { "type": "number" },
+        "description": { "type": "string", "minLength": 4, "maxLength": 240 },
+        "status": { "type": "string", "enum": ["open", "closed"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "businessId", "businessName", "ownerUid", "roleTitle", "salary", "schedule", "requirements", "slots", "filledSlots", "description", "status", "createdAt", "updatedAt"]
+    },
+    "BusinessEmployee": {
+      "title": "BusinessEmployee",
+      "description": "Contrato persistente de funcionário vinculado à empresa e ao personagem.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "businessId": { "type": "string", "minLength": 3, "maxLength": 128 },
+        "businessName": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "employeeUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "employeeName": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "employeeAlias": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "vacancyId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "roleTitle": { "type": "string", "minLength": 2, "maxLength": 48 },
+        "salary": { "type": "number" },
+        "schedule": { "type": "string", "minLength": 2, "maxLength": 48 },
+        "status": { "type": "string", "enum": ["active", "resigned", "terminated"] },
+        "lastPayrollId": { "type": "string", "maxLength": 128 },
+        "totalPaid": { "type": "number" },
+        "paymentsCount": { "type": "number" },
+        "hiredAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "businessId", "businessName", "ownerUid", "employeeUid", "employeeName", "employeeAlias", "vacancyId", "roleTitle", "salary", "schedule", "status", "totalPaid", "paymentsCount", "hiredAt", "updatedAt"]
+    },
+    "BusinessApplication": {
+      "title": "BusinessApplication",
+      "description": "Candidatura e proposta de contratação entre jogador e empresa.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "businessId": { "type": "string", "minLength": 3, "maxLength": 128 },
+        "businessName": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "vacancyId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "applicantUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "applicantName": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "applicantAlias": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "roleTitle": { "type": "string", "minLength": 2, "maxLength": 48 },
+        "offeredSalary": { "type": "number" },
+        "schedule": { "type": "string", "minLength": 2, "maxLength": 48 },
+        "coverNote": { "type": "string", "minLength": 2, "maxLength": 200 },
+        "status": { "type": "string", "enum": ["pending", "offer_sent", "hired", "rejected", "declined", "withdrawn"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "businessId", "businessName", "ownerUid", "vacancyId", "applicantUid", "applicantName", "applicantAlias", "roleTitle", "offeredSalary", "schedule", "coverNote", "status", "createdAt", "updatedAt"]
+    },
+    "BusinessProduct": {
+      "title": "BusinessProduct",
+      "description": "Produto cadastrado no catálogo comercial da empresa.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "businessId": { "type": "string", "minLength": 3, "maxLength": 128 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "sku": { "type": "string", "minLength": 2, "maxLength": 24 },
+        "category": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "unitCost": { "type": "number" },
+        "salePrice": { "type": "number" },
+        "minAllowedPrice": { "type": "number" },
+        "maxAllowedPrice": { "type": "number" },
+        "marginPercent": { "type": "number" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "businessId", "ownerUid", "name", "sku", "category", "unitCost", "salePrice", "minAllowedPrice", "maxAllowedPrice", "marginPercent", "active", "createdAt", "updatedAt"]
+    },
+    "BusinessInventoryItem": {
+      "title": "BusinessInventoryItem",
+      "description": "Estoque atual e último movimento de entrada ou saída por produto.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "businessId": { "type": "string", "minLength": 3, "maxLength": 128 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "productName": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "quantity": { "type": "number" },
+        "unitCost": { "type": "number" },
+        "salePrice": { "type": "number" },
+        "lastMovementType": { "type": "string", "enum": ["init", "restock", "sale", "adjustment"] },
+        "lastMovementQty": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "businessId", "ownerUid", "productName", "quantity", "unitCost", "salePrice", "lastMovementType", "lastMovementQty", "updatedAt"]
+    },
+    "BusinessTransaction": {
+      "title": "BusinessTransaction",
+      "description": "Registro imutável de movimentação financeira empresarial.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "operationId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "businessId": { "type": "string", "minLength": 3, "maxLength": 128 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "type": { "type": "string", "enum": ["acquisition", "p2p_sale", "capital_inject", "capital_withdraw", "payroll", "inventory_purchase", "product_sale", "operating_expense", "admin_adjustment", "vehicle_restock", "vehicle_sale", "vehicle_commission"] },
+        "direction": { "type": "string", "enum": ["in", "out"] },
+        "amount": { "type": "number" },
+        "description": { "type": "string", "minLength": 3, "maxLength": 180 },
+        "counterpartyUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "counterpartyLabel": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "status": { "type": "string", "enum": ["completed"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "operationId", "businessId", "ownerUid", "actorUid", "type", "direction", "amount", "description", "counterpartyUid", "counterpartyLabel", "status", "createdAt"]
+    },
+    "BusinessPayrollRecord": {
+      "title": "BusinessPayrollRecord",
+      "description": "Comprovante imutável e idempotente de pagamento de folha salarial empresarial.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "operationId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "businessId": { "type": "string", "minLength": 3, "maxLength": 128 },
+        "businessName": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "contractId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "employeeUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "employeeName": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "roleTitle": { "type": "string", "minLength": 2, "maxLength": 48 },
+        "amount": { "type": "number" },
+        "bankTxId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "businessTxId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "status": { "type": "string", "enum": ["paid"] },
+        "paidAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "operationId", "businessId", "businessName", "contractId", "ownerUid", "employeeUid", "employeeName", "roleTitle", "amount", "bankTxId", "businessTxId", "status", "paidAt"]
+    },
+    "BusinessReview": {
+      "title": "BusinessReview",
+      "description": "Avaliação de cidadãos sobre reputação e atendimento empresarial.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "businessId": { "type": "string", "minLength": 3, "maxLength": 128 },
+        "authorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "authorName": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "rating": { "type": "number" },
+        "comment": { "type": "string", "minLength": 3, "maxLength": 200 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "businessId", "authorUid", "authorName", "rating", "comment", "createdAt"]
+    },
+    "VehicleCatalogModel": {
+      "title": "VehicleCatalogModel",
+      "description": "Modelo fictício de veículo administrável no catálogo oficial LCE.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "manufacturer": { "type": "string", "minLength": 2, "maxLength": 48 },
+        "model": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "year": { "type": "number" },
+        "category": { "type": "string", "enum": ["popular", "sedan", "suv", "esportivo", "luxo", "picape", "moto", "caminhao"] },
+        "basePrice": { "type": "number" },
+        "marketValue": { "type": "number" },
+        "topSpeed": { "type": "number" },
+        "acceleration": { "type": "number" },
+        "capacity": { "type": "number" },
+        "fuelConsumption": { "type": "number" },
+        "defaultCondition": { "type": "number" },
+        "imageKey": { "type": "string", "enum": ["popular", "sedan", "suv", "esportivo", "luxo", "picape", "moto", "caminhao"] },
+        "minPriceMultiplier": { "type": "number" },
+        "maxPriceMultiplier": { "type": "number" },
+        "maxCommissionPercent": { "type": "number" },
+        "description": { "type": "string", "minLength": 4, "maxLength": 240 },
+        "active": { "type": "boolean" },
+        "isCatalogVehicle": { "type": "boolean" },
+        "updatedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "manufacturer", "model", "year", "category", "basePrice", "marketValue",
+        "topSpeed", "acceleration", "capacity", "fuelConsumption", "defaultCondition",
+        "imageKey", "minPriceMultiplier", "maxPriceMultiplier", "maxCommissionPercent",
+        "description", "active", "isCatalogVehicle", "updatedBy", "updatedAt"
+      ]
+    },
+    "DealershipStockItem": {
+      "title": "DealershipStockItem",
+      "description": "Unidade de veículo em estoque de uma concessionária pertencente a jogador.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "businessId": { "type": "string", "minLength": 3, "maxLength": 128 },
+        "businessName": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ownerName": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "modelId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "manufacturer": { "type": "string", "minLength": 2, "maxLength": 48 },
+        "model": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "year": { "type": "number" },
+        "category": { "type": "string", "enum": ["popular", "sedan", "suv", "esportivo", "luxo", "picape", "moto", "caminhao"] },
+        "imageKey": { "type": "string", "enum": ["popular", "sedan", "suv", "esportivo", "luxo", "picape", "moto", "caminhao"] },
+        "purchaseCost": { "type": "number" },
+        "salePrice": { "type": "number" },
+        "promoDiscountPercent": { "type": "number" },
+        "finalPrice": { "type": "number" },
+        "topSpeed": { "type": "number" },
+        "acceleration": { "type": "number" },
+        "capacity": { "type": "number" },
+        "fuelConsumption": { "type": "number" },
+        "condition": { "type": "number" },
+        "commissionPercent": { "type": "number" },
+        "assignedSellerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "assignedSellerName": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "status": { "type": "string", "enum": ["available", "sold", "removed"] },
+        "soldToUid": { "type": "string", "maxLength": 128 },
+        "soldVehicleId": { "type": "string", "maxLength": 128 },
+        "lastTxId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "businessId", "businessName", "ownerUid", "ownerName", "modelId",
+        "manufacturer", "model", "year", "category", "imageKey", "purchaseCost",
+        "salePrice", "promoDiscountPercent", "finalPrice", "topSpeed", "acceleration",
+        "capacity", "fuelConsumption", "condition", "commissionPercent",
+        "assignedSellerUid", "assignedSellerName", "status", "lastTxId", "createdAt", "updatedAt"
+      ]
+    },
+    "PlayerVehicle": {
+      "title": "PlayerVehicle",
+      "description": "Veículo individual pertencente a um único proprietário na garagem do jogador.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ownerName": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "ownerAlias": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "modelId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "manufacturer": { "type": "string", "minLength": 2, "maxLength": 48 },
+        "model": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "year": { "type": "number" },
+        "category": { "type": "string", "enum": ["popular", "sedan", "suv", "esportivo", "luxo", "picape", "moto", "caminhao"] },
+        "imageKey": { "type": "string", "enum": ["popular", "sedan", "suv", "esportivo", "luxo", "picape", "moto", "caminhao"] },
+        "plate": { "type": "string", "minLength": 4, "maxLength": 16 },
+        "purchasePrice": { "type": "number" },
+        "marketValue": { "type": "number" },
+        "topSpeed": { "type": "number" },
+        "acceleration": { "type": "number" },
+        "capacity": { "type": "number" },
+        "fuelConsumption": { "type": "number" },
+        "condition": { "type": "number" },
+        "mileageKm": { "type": "number" },
+        "fuelLevel": { "type": "number" },
+        "status": { "type": "string", "enum": ["in_garage", "listed", "parked"] },
+        "activeListingId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "originBusinessId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "originBusinessName": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "lastTxId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "parkedZone": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "parkedX": { "type": "number" },
+        "parkedZ": { "type": "number" },
+        "acquiredAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "ownerUid", "ownerName", "ownerAlias", "modelId", "manufacturer", "model",
+        "year", "category", "imageKey", "plate", "purchasePrice", "marketValue",
+        "topSpeed", "acceleration", "capacity", "fuelConsumption", "condition", "mileageKm",
+        "fuelLevel", "status", "activeListingId", "originBusinessId", "originBusinessName",
+        "lastTxId", "parkedZone", "parkedX", "parkedZ", "acquiredAt", "updatedAt"
+      ]
+    },
+    "VehicleTransaction": {
+      "title": "VehicleTransaction",
+      "description": "Histórico imutável de compra, venda, manutenção e comissão de veículos.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "operationId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "type": { "type": "string", "enum": ["dealership_restock", "dealership_sale", "p2p_sale", "maintenance", "commission_paid"] },
+        "vehicleId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "modelId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "vehicleLabel": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "businessId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "fromUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "fromLabel": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "toUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "toLabel": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "participants": { "type": "array" },
+        "amount": { "type": "number" },
+        "description": { "type": "string", "minLength": 3, "maxLength": 180 },
+        "status": { "type": "string", "enum": ["completed"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "operationId", "type", "vehicleId", "modelId", "vehicleLabel",
+        "businessId", "fromUid", "fromLabel", "toUid", "toLabel", "actorUid",
+        "participants", "amount", "description", "status", "createdAt"
+      ]
+    },
+    "VehicleListing": {
+      "title": "VehicleListing",
+      "description": "Anúncio de venda de veículo usado entre jogadores no mercado P2P.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "vehicleId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "sellerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sellerName": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "sellerAlias": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "modelId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "manufacturer": { "type": "string", "minLength": 2, "maxLength": 48 },
+        "model": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "year": { "type": "number" },
+        "category": { "type": "string", "enum": ["popular", "sedan", "suv", "esportivo", "luxo", "picape", "moto", "caminhao"] },
+        "imageKey": { "type": "string", "enum": ["popular", "sedan", "suv", "esportivo", "luxo", "picape", "moto", "caminhao"] },
+        "plate": { "type": "string", "minLength": 4, "maxLength": 16 },
+        "condition": { "type": "number" },
+        "mileageKm": { "type": "number" },
+        "fuelLevel": { "type": "number" },
+        "topSpeed": { "type": "number" },
+        "acceleration": { "type": "number" },
+        "capacity": { "type": "number" },
+        "marketValue": { "type": "number" },
+        "askingPrice": { "type": "number" },
+        "description": { "type": "string", "minLength": 3, "maxLength": 200 },
+        "status": { "type": "string", "enum": ["active", "sold", "cancelled", "suspended"] },
+        "buyerUid": { "type": "string", "maxLength": 128 },
+        "soldTxId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "vehicleId", "sellerUid", "sellerName", "sellerAlias", "modelId",
+        "manufacturer", "model", "year", "category", "imageKey", "plate",
+        "condition", "mileageKm", "fuelLevel", "topSpeed", "acceleration", "capacity",
+        "marketValue", "askingPrice", "description", "status", "createdAt", "updatedAt"
+      ]
+    },
+    "VehicleOffer": {
+      "title": "VehicleOffer",
+      "description": "Proposta de negociação P2P enviada por um comprador para um veículo anunciado.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "listingId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "vehicleId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "vehicleLabel": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "sellerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sellerName": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "buyerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "buyerName": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "buyerAlias": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "askingPrice": { "type": "number" },
+        "offerPrice": { "type": "number" },
+        "message": { "type": "string", "minLength": 2, "maxLength": 180 },
+        "status": { "type": "string", "enum": ["pending", "accepted", "rejected", "withdrawn", "completed"] },
+        "completedTxId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "listingId", "vehicleId", "vehicleLabel", "sellerUid", "sellerName",
+        "buyerUid", "buyerName", "buyerAlias", "askingPrice", "offerPrice",
+        "message", "status", "createdAt", "updatedAt"
+      ]
+    },
+    "VehicleMaintenanceRecord": {
+      "title": "VehicleMaintenanceRecord",
+      "description": "Registro imutável de abastecimento, reparo mecânico ou revisão preventiva.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "operationId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "vehicleId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "serviceType": { "type": "string", "enum": ["fuel", "repair", "revision"] },
+        "cost": { "type": "number" },
+        "conditionBefore": { "type": "number" },
+        "conditionAfter": { "type": "number" },
+        "fuelBefore": { "type": "number" },
+        "fuelAfter": { "type": "number" },
+        "bankTxId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "description": { "type": "string", "minLength": 3, "maxLength": 180 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "operationId", "vehicleId", "ownerUid", "serviceType", "cost",
+        "conditionBefore", "conditionAfter", "fuelBefore", "fuelAfter",
+        "bankTxId", "description", "createdAt"
+      ]
+    },
+    "VehicleCommissionRecord": {
+      "title": "VehicleCommissionRecord",
+      "description": "Registro de comissão por venda de veículo atribuída a funcionário de concessionária.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "businessId": { "type": "string", "minLength": 3, "maxLength": 128 },
+        "businessName": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sellerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sellerName": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "stockId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "vehicleId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "vehicleLabel": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "salePrice": { "type": "number" },
+        "commissionPercent": { "type": "number" },
+        "commissionAmount": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "paid", "cancelled"] },
+        "saleTxId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "payoutTxId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "paidAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "businessId", "businessName", "ownerUid", "sellerUid", "sellerName",
+        "stockId", "vehicleId", "vehicleLabel", "salePrice", "commissionPercent",
+        "commissionAmount", "status", "saleTxId", "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": { "schema": { "$ref": "#/entities/CharacterProfile" }, "description": "Perfis jogáveis e localização dos personagens." },
+    "/users/{userId}/private/{docId}": { "schema": { "$ref": "#/entities/UserPrivateAccount" }, "description": "Subcoleção privada de PII." },
+    "/admins/{adminUid}": { "schema": { "$ref": "#/entities/AdminRecord" }, "description": "Registro autoritativo de administradores." },
+    "/economyConfig/{configId}": { "schema": { "$ref": "#/entities/EconomyBaseConfig" }, "description": "Parâmetros globais da economia mista e valores iniciais." },
+    "/wallets/{userId}": { "schema": { "$ref": "#/entities/Wallet" }, "description": "Carteiras individuais (dinheiro limpo físico, dinheiro sujo e patrimônio)." },
+    "/bank_accounts/{userId}": { "schema": { "$ref": "#/entities/BankAccount" }, "description": "Contas bancárias legais no Banco Central LCE." },
+    "/bank_directory/{userId}": { "schema": { "$ref": "#/entities/BankDirectoryEntry" }, "description": "Catálogo público de destinatários para transferências bancárias." },
+    "/transactions/{txId}": { "schema": { "$ref": "#/entities/FinancialTransaction" }, "description": "Livro-razão imutável de todas as movimentações financeiras." },
+    "/jobs/{jobId}": { "schema": { "$ref": "#/entities/JobDefinition" }, "description": "Catálogo administrável de profissões legais." },
+    "/work_sessions/{sessionId}": { "schema": { "$ref": "#/entities/WorkSession" }, "description": "Expedientes de trabalho ativos e concluídos." },
+    "/salary_payments/{sessionId}": { "schema": { "$ref": "#/entities/SalaryPayment" }, "description": "Histórico imutável de pagamentos salariais (1 por expediente)." },
+    "/job_experience/{userId}": { "schema": { "$ref": "#/entities/JobExperience" }, "description": "Experiência profissional acumulada por profissão." },
+    "/business_locations/{locationId}": { "schema": { "$ref": "#/entities/BusinessLocation" }, "description": "Catálogo e localizações 3D administráveis de estabelecimentos." },
+    "/businesses/{businessId}": { "schema": { "$ref": "#/entities/BusinessRecord" }, "description": "Empresas registradas e pertencentes a jogadores reais." },
+    "/business_finances/{businessId}": { "schema": { "$ref": "#/entities/BusinessFinance" }, "description": "Caixa privado, receitas, despesas e resultado das empresas." },
+    "/business_vacancies/{vacancyId}": { "schema": { "$ref": "#/entities/BusinessVacancy" }, "description": "Vagas de emprego abertas pelas empresas dos jogadores." },
+    "/business_employees/{contractId}": { "schema": { "$ref": "#/entities/BusinessEmployee" }, "description": "Contratos persistentes de funcionários vinculados às empresas." },
+    "/business_applications/{applicationId}": { "schema": { "$ref": "#/entities/BusinessApplication" }, "description": "Candidaturas e propostas de trabalho entre jogadores e empresas." },
+    "/business_products/{productId}": { "schema": { "$ref": "#/entities/BusinessProduct" }, "description": "Produtos cadastrados com custos, preços e margens empresariais." },
+    "/business_inventory/{inventoryId}": { "schema": { "$ref": "#/entities/BusinessInventoryItem" }, "description": "Estoque atual e histórico de movimentações por produto." },
+    "/business_transactions/{txId}": { "schema": { "$ref": "#/entities/BusinessTransaction" }, "description": "Livro-razão imutável das movimentações empresariais." },
+    "/business_payroll/{payrollId}": { "schema": { "$ref": "#/entities/BusinessPayrollRecord" }, "description": "Histórico imutável e idempotente de pagamentos de folha salarial." },
+    "/business_reviews/{reviewId}": { "schema": { "$ref": "#/entities/BusinessReview" }, "description": "Avaliações de reputação empresarial por cidadãos." },
+    "/vehicle_catalog/{modelId}": { "schema": { "$ref": "#/entities/VehicleCatalogModel" }, "description": "Catálogo oficial administrável de modelos fictícios de veículos LCE." },
+    "/dealership_inventory/{stockId}": { "schema": { "$ref": "#/entities/DealershipStockItem" }, "description": "Estoque unitário de veículos nas concessionárias dos jogadores." },
+    "/vehicles/{vehicleId}": { "schema": { "$ref": "#/entities/PlayerVehicle" }, "description": "Veículos individuais na garagem dos jogadores com propriedade única." },
+    "/vehicle_transactions/{txId}": { "schema": { "$ref": "#/entities/VehicleTransaction" }, "description": "Livro-razão imutável de compra, venda, manutenção e comissão veicular." },
+    "/vehicle_listings/{listingId}": { "schema": { "$ref": "#/entities/VehicleListing" }, "description": "Anúncios públicos do mercado de veículos usados entre jogadores (P2P)." },
+    "/vehicle_offers/{offerId}": { "schema": { "$ref": "#/entities/VehicleOffer" }, "description": "Propostas de negociação P2P para veículos usados." },
+    "/vehicle_maintenance/{maintId}": { "schema": { "$ref": "#/entities/VehicleMaintenanceRecord" }, "description": "Histórico imutável de abastecimento, reparo e revisão dos veículos." },
+    "/vehicle_commissions/{commissionId}": { "schema": { "$ref": "#/entities/VehicleCommissionRecord" }, "description": "Comissões por vendas de veículos atribuídas a vendedores de concessionárias." },
+    "/admin_logs/{logId}": { "schema": { "$ref": "#/entities/AdminLog" }, "description": "Auditoria administrativa imutável oficial." },
+    "/adminAuditLogs/{logId}": { "schema": { "$ref": "#/entities/AdminLog" }, "description": "Legado somente-leitura do Módulo 1 preservado sem duplicação." }
+  }
+}
